@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
     image: grok2api:local
     ports:
-      - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
+      - "127.0.0.1:${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
     environment:
       TZ: Asia/Shanghai
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
