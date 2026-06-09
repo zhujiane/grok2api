@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import orjson
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import Response
-from pydantic import BaseModel, RootModel
+from pydantic import AliasChoices, BaseModel, Field, RootModel
 
 from app.platform.errors import AppError, ErrorKind, ValidationError
 from app.platform.logging.logger import logger
@@ -80,6 +80,10 @@ class EditTokenRequest(BaseModel):
     old_token: str
     token: str
     pool: str = "basic"
+    x_statsig_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("x_statsig_id", "x-statsig-id"),
+    )
 
 
 class ToggleTokenDisabledRequest(BaseModel):
@@ -95,6 +99,10 @@ class ToggleTokensDisabledRequest(BaseModel):
 class TokenImportItem(BaseModel):
     token: str
     tags: list[str] = []
+    x_statsig_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("x_statsig_id", "x-statsig-id"),
+    )
 
 
 class SaveTokensRequest(RootModel[dict[str, list[str | TokenImportItem]]]):
@@ -119,20 +127,38 @@ def _quota_brief(q: dict) -> dict:
 
 
 def _serialize_record(r) -> dict:
+    x_statsig_id = ""
+    if isinstance(r.ext, dict):
+        x_statsig_id = str(r.ext.get("x_statsig_id") or r.ext.get("x-statsig-id") or "")
     return {
         "token":       r.token,
         "pool":        r.pool or "basic",
         "status":      r.status,
         "quota":       _quota_brief(r.quota) if isinstance(r.quota, dict) else {},
         "use_count":   r.usage_use_count or 0,
+        "fail_count":  r.usage_fail_count or 0,
         "last_used_at": r.last_use_at,
         "tags":        r.tags or [],
+        "x_statsig_id": x_statsig_id,
     }
 
 
 def _json(data) -> Response:
     """orjson fast-path response."""
     return Response(content=orjson.dumps(data), media_type="application/json")
+
+
+def _sanitize_statsig_id(value: str | None) -> str:
+    raw = str(value or "").strip()
+    raw = _STRIP_RE.sub("", raw)
+    return raw.encode("latin-1", errors="ignore").decode("latin-1")
+
+
+def _ext_with_statsig(ext: dict, value: str | None) -> dict:
+    out = dict(ext or {})
+    out.pop("x-statsig-id", None)
+    out["x_statsig_id"] = _sanitize_statsig_id(value)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +197,11 @@ async def save_tokens(
             token_val = _sanitize(td.get("token", ""))
             if not token_val:
                 continue
-            upserts.append(AccountUpsert(token=token_val, pool=pool_name, tags=td.get("tags") or []))
+            ext = {}
+            x_statsig_id = _sanitize_statsig_id(td.get("x_statsig_id") or td.get("x-statsig-id"))
+            if x_statsig_id:
+                ext["x_statsig_id"] = x_statsig_id
+            upserts.append(AccountUpsert(token=token_val, pool=pool_name, tags=td.get("tags") or [], ext=ext))
         if upserts:
             await repo.replace_pool(BulkReplacePoolCommand(pool=pool_name, upserts=upserts))
             all_tokens.extend(u.token for u in upserts)
@@ -261,6 +291,7 @@ async def edit_token(
     old_token = _sanitize(req.old_token)
     new_token = _sanitize(req.token)
     pool = (req.pool or "basic").strip().lower()
+    x_statsig_id = _sanitize_statsig_id(req.x_statsig_id)
 
     if not old_token or not new_token:
         raise ValidationError("Token is required", param="token")
@@ -289,12 +320,12 @@ async def edit_token(
         token=new_token,
         pool=pool,
         tags=record.tags,
-        ext=record.ext,
+        ext=_ext_with_statsig(record.ext, x_statsig_id),
     )])
 
     if old_token == new_token:
         logger.info("admin token updated: token={} pool={}", _mask(new_token), pool)
-        return _json({"status": "success", "token": new_token, "pool": pool})
+        return _json({"status": "success", "token": new_token, "pool": pool, "x_statsig_id": x_statsig_id})
 
     qs = record.quota_set()
     await repo.patch_accounts([AccountPatch(
@@ -313,12 +344,12 @@ async def edit_token(
         last_sync_at=record.last_sync_at,
         last_clear_at=record.last_clear_at,
         state_reason=record.state_reason,
-        ext_merge=record.ext,
+        ext_merge=_ext_with_statsig(record.ext, x_statsig_id),
     )])
     await repo.delete_accounts([old_token])
 
     logger.info("admin token replaced: previous_token={} current_token={} pool={}", _mask(old_token), _mask(new_token), pool)
-    return _json({"status": "success", "token": new_token, "pool": pool})
+    return _json({"status": "success", "token": new_token, "pool": pool, "x_statsig_id": x_statsig_id})
 
 
 @router.post("/tokens/disabled")

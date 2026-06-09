@@ -80,6 +80,32 @@ def _statsig_id() -> str:
     )
 
 
+def _account_statsig_id(token: str) -> str:
+    try:
+        from app.dataplane.account import _directory
+
+        if _directory is None:
+            return ""
+        account_token = token[4:] if token.startswith("sso=") else token
+        return _sanitize(
+            _directory.statsig_id_for_token(account_token),
+            field="x_statsig_id",
+            strip_spaces=True,
+        )
+    except Exception as exc:
+        logger.debug("account statsig lookup failed: error={}", exc)
+        return ""
+
+
+def _effective_statsig_id(token: str) -> str | None:
+    account_value = _account_statsig_id(token)
+    if account_value:
+        return account_value
+    if get_config("features.dynamic_statsig", True):
+        return _statsig_id()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Client-hints helpers
 # ---------------------------------------------------------------------------
@@ -251,6 +277,8 @@ def build_http_headers(
     ref_host = urlparse(ref).hostname
     site = "same-origin" if org_host and org_host == ref_host else "same-site"
 
+    statsig_id = _effective_statsig_id(cookie_token)
+
     headers: dict[str, str] = {
         "Accept": accept,
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -268,9 +296,10 @@ def build_http_headers(
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": site,
         "User-Agent": ua,
-        "x-statsig-id": _statsig_id(),
         "x-xai-request-id": str(uuid.uuid4()),
     }
+    if statsig_id:
+        headers["x-statsig-id"] = statsig_id
     headers.update(_client_hints(browser, raw_ua))
     headers["Cookie"] = build_sso_cookie(cookie_token, lease=lease)
 

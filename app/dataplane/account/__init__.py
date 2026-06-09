@@ -300,6 +300,15 @@ class AccountDirectory:
     def revision(self) -> int:
         return self._table.revision if self._table else 0
 
+    def statsig_id_for_token(self, token: str) -> str:
+        table = self._table
+        if table is None:
+            return ""
+        idx = table.idx_by_token.get(token)
+        if idx is None:
+            return ""
+        return table.get_statsig_id(idx)
+
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -59,6 +59,7 @@ class AccountRuntimeTable:
     # --- Identity ---
     token_by_idx: list[str]      = field(default_factory=list)
     idx_by_token: dict[str, int] = field(default_factory=dict)
+    statsig_id_by_idx: list[str] = field(default_factory=list)
 
     # --- Pool / status (uint8) ---
     pool_by_idx:   "array.array[int]" = field(default_factory=lambda: array.array("B"))
@@ -277,6 +278,7 @@ class AccountRuntimeTable:
     def _append_slot(
         self,
         token:           str,
+        statsig_id:      str,
         pool_id:         int,
         status_id:       int,
         quota_auto:      int,
@@ -312,6 +314,7 @@ class AccountRuntimeTable:
         idx = len(self.token_by_idx)
         self.token_by_idx.append(token)
         self.idx_by_token[token] = idx
+        self.statsig_id_by_idx.append(statsig_id)
         self.pool_by_idx.append(pool_id)
         self.status_by_idx.append(status_id)
         self.quota_auto_by_idx.append(max(-1, min(quota_auto, 32767)))
@@ -356,6 +359,7 @@ class AccountRuntimeTable:
     def _update_slot(
         self,
         idx: int,
+        statsig_id: str,
         pool_id: int,
         status_id: int,
         quota_auto: int,
@@ -392,6 +396,7 @@ class AccountRuntimeTable:
         self._remove_from_indexes(idx)
         self._remove_from_tag_idx(idx, old_tags)
 
+        self.statsig_id_by_idx[idx] = statsig_id
         self.pool_by_idx[idx] = pool_id
         self.status_by_idx[idx] = status_id
         self.quota_auto_by_idx[idx] = max(-1, min(quota_auto, 32767))
@@ -432,6 +437,9 @@ class AccountRuntimeTable:
 
     def get_token(self, idx: int) -> str:
         return self.token_by_idx[idx]
+
+    def get_statsig_id(self, idx: int) -> str:
+        return self.statsig_id_by_idx[idx]
 
     def get_pool_id(self, idx: int) -> int:
         return int(self.pool_by_idx[idx])

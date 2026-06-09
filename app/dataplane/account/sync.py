@@ -15,6 +15,11 @@ from ..shared.enums import POOL_STR_TO_ID, STATUS_STR_TO_ID, StatusId
 from .table import AccountRuntimeTable, make_empty_table
 
 
+def _record_statsig_id(record: AccountRecord) -> str:
+    value = record.ext.get("x_statsig_id") or record.ext.get("x-statsig-id") or ""
+    return str(value).strip() if value is not None else ""
+
+
 def _record_to_slot_args(record: AccountRecord) -> dict:
     """Extract columnar values from a control-plane AccountRecord."""
     qs = normalize_quota_set(record.pool, record.quota_set())
@@ -37,6 +42,7 @@ def _record_to_slot_args(record: AccountRecord) -> dict:
     console_w = qs.console
     # fmt: off
     return dict(
+        statsig_id      = _record_statsig_id(record),
         pool_id         = pool_id,
         status_id       = status_id,
         quota_auto      = max(0, qs.auto.remaining),

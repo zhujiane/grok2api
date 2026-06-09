@@ -1055,6 +1055,10 @@
         <span class="dialog-label" data-i18n="account.labelType">类型</span>
         <select class="input" id="edit-pool" style="flex:1"></select>
       </div>
+      <div class="dialog-field">
+        <span class="dialog-label" style="width:82px">x-statsig-id</span>
+        <input class="input" id="edit-statsig-id" placeholder="固定 x-statsig-id，留空则按配置动态生成" style="flex:1">
+      </div>
     </div>
     <div class="dialog-actions">
       <button onclick="closeModal('modal-edit')" class="dialog-btn" data-i18n="account.cancel">取消</button>
@@ -1675,6 +1679,7 @@ function openEdit(token) {
   document.getElementById('edit-token').value = item.token;
   fillPoolOptions('edit-pool');
   document.getElementById('edit-pool').value = item.pool || 'basic';
+  document.getElementById('edit-statsig-id').value = item.x_statsig_id || '';
   openModal('modal-edit');
 }
 
@@ -1733,11 +1738,12 @@ async function doImport() {
 async function doEdit() {
   const token = document.getElementById('edit-token').value.trim();
   const pool = document.getElementById('edit-pool').value;
+  const xStatsigId = document.getElementById('edit-statsig-id').value.trim();
   if (!_editingToken) return;
   if (!token) return showToast(tr('account.enterToken', null, '请输入 Token'), 'error');
   try {
     showToast(tr('account.saving', null, '正在保存修改…'), 'info');
-    await _api('PUT', '/tokens/edit', { old_token: _editingToken, token, pool });
+    await _api('PUT', '/tokens/edit', { old_token: _editingToken, token, pool, x_statsig_id: xStatsigId });
     closeModal('modal-edit');
     _editingToken = '';
     showToast(tr('account.editDone', null, '编辑完成'), 'success');
@@ -1783,7 +1789,11 @@ function doExport() {
   document.getElementById('exp-json-btn').onclick = () => {
     closeModal('modal-export');
     const out = {};
-    tokens.forEach(t => (out[t.pool||'basic'] = out[t.pool||'basic']||[]).push({token:t.token,tags:t.tags||[]}));
+    tokens.forEach(t => {
+      const item = {token:t.token,tags:t.tags||[]};
+      if (t.x_statsig_id) item.x_statsig_id = t.x_statsig_id;
+      (out[t.pool||'basic'] = out[t.pool||'basic']||[]).push(item);
+    });
     _download(JSON.stringify(out,null,2), `tokens-${currentFilterSuffix()}.json`, 'application/json');
   };
   document.getElementById('exp-txt-btn').onclick = () => {
