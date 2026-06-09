@@ -141,6 +141,23 @@ class ConfigSnapshot:
 # ---------------------------------------------------------------------------
 
 def _apply_env(data: dict[str, Any], prefix: str = "GROK_") -> dict[str, Any]:
+    clearance_env = {
+        "FLARESOLVERR_URL": ("flaresolverr_url", str),
+        "CF_REFRESH_INTERVAL": ("refresh_interval", int),
+        "CF_TIMEOUT": ("timeout_sec", int),
+    }
+    for env_key, (config_key, caster) in clearance_env.items():
+        env_val = os.getenv(env_key)
+        if env_val is None or not env_val.strip():
+            continue
+        value: Any = env_val.strip()
+        if caster is int:
+            try:
+                value = int(value)
+            except ValueError:
+                continue
+        data.setdefault("proxy", {}).setdefault("clearance", {})[config_key] = value
+
     prefix_len = len(prefix)
     for env_key, env_val in os.environ.items():
         if not env_key.startswith(prefix):

@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Grok2API: granian",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "granian",
+      "args": [
+        "--interface",
+        "asgi",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--workers",
+        "1",
+        "app.main:app"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "TZ": "Asia/Shanghai",
+        "LOG_LEVEL": "DEBUG",
+        "SERVER_HOST": "0.0.0.0",
+        "SERVER_PORT": "8000",
+        "SERVER_WORKERS": "1",
+        "ACCOUNT_STORAGE": "postgresql",
+        "ACCOUNT_POSTGRESQL_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/grok2api",
+        "ACCOUNT_REDIS_URL": "redis://localhost:6379/0",
+        "FLARESOLVERR_URL": "http://localhost:8191/"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

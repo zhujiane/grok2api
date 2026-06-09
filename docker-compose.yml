@@ -1,7 +1,10 @@
 services:
   grok2api:
     container_name: grok2api
-    image: ghcr.io/jiujiu532/grok2api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grok2api:local
     ports:
       - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
     environment:
@@ -10,21 +13,23 @@ services:
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       SERVER_PORT: ${SERVER_PORT:-8000}
       SERVER_WORKERS: ${SERVER_WORKERS:-1}
-      ACCOUNT_STORAGE: ${ACCOUNT_STORAGE:-local}
+      ACCOUNT_STORAGE: ${ACCOUNT_STORAGE:-postgresql}
       ACCOUNT_LOCAL_PATH: ${ACCOUNT_LOCAL_PATH:-data/accounts.db}
-      ACCOUNT_REDIS_URL: ${ACCOUNT_REDIS_URL:-}
+      ACCOUNT_REDIS_URL: ${ACCOUNT_REDIS_URL:-redis://host.docker.internal:6379/0}
       ACCOUNT_MYSQL_URL: ${ACCOUNT_MYSQL_URL:-}
-      ACCOUNT_POSTGRESQL_URL: ${ACCOUNT_POSTGRESQL_URL:-}
-      # 启用 CF 自动刷新: 取消以下三行注释，并取消底部 flaresolverr 服务的注释
-      # FLARESOLVERR_URL: http://flaresolverr:8191
-      # CF_REFRESH_INTERVAL: "600"
-      # CF_TIMEOUT: "60"
+      ACCOUNT_POSTGRESQL_URL: ${ACCOUNT_POSTGRESQL_URL:-postgresql+asyncpg://postgres:postgres@host.docker.internal:5432/grok2api}
+      FLARESOLVERR_URL: ${FLARESOLVERR_URL:-http://host.docker.internal:8191/}
 
       # ACCOUNT_STORAGE: local | redis | mysql | postgresql
       # ACCOUNT_LOCAL_PATH: SQLite path when ACCOUNT_STORAGE=local
       # ACCOUNT_REDIS_URL: Redis DSN when ACCOUNT_STORAGE=redis
       # ACCOUNT_MYSQL_URL: MySQL DSN when ACCOUNT_STORAGE=mysql
       # ACCOUNT_POSTGRESQL_URL: PostgreSQL DSN when ACCOUNT_STORAGE=postgresql
+      # 外部依赖已由其他 Docker 容器发布到宿主机：
+      #   PostgreSQL: http://localhost:5432/  postgres/postgres
+      #   Redis:      http://localhost:6379/
+      #   FlareSolverr: http://localhost:8191/
+      # 容器内访问宿主机端口使用 host.docker.internal。
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -43,13 +48,4 @@ services:
   #   cap_add:
   #     - NET_ADMIN
 
-  # 启用 CF 自动刷新时取消以下注释
-  # flaresolverr:
-  #   container_name: flaresolverr
-  #   image: ghcr.io/flaresolverr/flaresolverr:latest
-  #   ports:
-  #     - "127.0.0.1:8191:8191"
-  #   environment:
-  #     TZ: Asia/Shanghai
-  #     LOG_LEVEL: info
-  #   restart: unless-stopped
+  # FlareSolverr 已由外部 Docker 启动并发布到 http://localhost:8191/。
