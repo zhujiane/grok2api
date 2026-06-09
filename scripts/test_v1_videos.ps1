@@ -42,12 +42,12 @@ function New-VideoJob {
         "-sS",
         "-X", "POST", $Url,
         "-H", "Authorization: Bearer $ApiKey",
-        "-F", "model=$Model",
-        "-F", "prompt=$Prompt",
-        "-F", "seconds=$Seconds",
-        "-F", "size=$Size",
-        "-F", "resolution_name=$ResolutionName",
-        "-F", "preset=$Preset"
+        "--form-string", "model=$Model",
+        "--form-string", "prompt=$Prompt",
+        "--form-string", "seconds=$Seconds",
+        "--form-string", "size=$Size",
+        "--form-string", "resolution_name=$ResolutionName",
+        "--form-string", "preset=$Preset"
     )
 
     foreach ($path in $Ref) {

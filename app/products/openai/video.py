@@ -8,6 +8,7 @@ Supports:
 import asyncio
 import hashlib
 import html
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -61,6 +62,7 @@ _VIDEO_QUALITY = "standard"
 _VIDEO_OBJECT = "video"
 _VIDEO_JOB_TTL_S = 3600
 _VIDEO_EXTENSION_REF_TYPE = "ORIGINAL_REF_TYPE_VIDEO_EXTENSION"
+_VIDEO_IMAGE_PLACEHOLDER_RE = re.compile(r"@IMAGE(\d+)\b", re.IGNORECASE)
 _SUPPORTED_VIDEO_LENGTHS = frozenset({6, 10, 12, 16, 20})
 _VIDEO_SIZE_MAP: dict[str, tuple[str, str]] = {
     "720x1280": ("9:16", "720p"),
@@ -137,6 +139,18 @@ _VIDEO_JOBS_LOCK = asyncio.Lock()
 
 def _build_message(prompt: str, preset: str) -> str:
     return f"{prompt} {_PRESET_FLAGS.get(preset, '--mode=custom')}".strip()
+
+
+def _replace_video_image_placeholders(prompt: str, post_ids: list[str]) -> str:
+    """Replace @IMAGE1-style placeholders with uploaded reference post IDs."""
+
+    def _replace(match: re.Match[str]) -> str:
+        image_number = int(match.group(1))
+        if image_number < 1 or image_number > len(post_ids):
+            return match.group(0)
+        return f"@{post_ids[image_number - 1]}"
+
+    return _VIDEO_IMAGE_PLACEHOLDER_RE.sub(_replace, prompt)
 
 
 def _progress_reason(progress: int) -> str:
@@ -219,6 +233,7 @@ def _video_create_payload(
     video_length: int,
     preset: str,
     image_references: list[str] | None = None,
+    image_reference_post_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     video_gen_config: dict[str, Any] = {
         "parentPostId": parent_post_id,
@@ -230,10 +245,16 @@ def _video_create_payload(
         video_gen_config["isVideoEdit"] = False
         video_gen_config["isReferenceToVideo"] = True
         video_gen_config["imageReferences"] = image_references
-    return {
+    message_prompt = prompt
+    if image_reference_post_ids:
+        message_prompt = _replace_video_image_placeholders(
+            prompt, image_reference_post_ids
+        )
+
+    payload: dict[str, Any] = {
         "temporary": True,
         "modelName": _VIDEO_MODEL_NAME,
-        "message": _build_message(prompt, preset),
+        "message": _build_message(message_prompt, preset),
         "enableSideBySide": True,
         "responseMetadata": {
             "experiments": [],
@@ -244,6 +265,7 @@ def _video_create_payload(
             },
         },
     }
+    return payload
 
 
 def _video_extend_start_time(seconds: int) -> float:
@@ -643,6 +665,9 @@ async def _generate_video_with_token(
     references: list[_VideoReference] = []
     if input_references:
         references = await _prepare_video_references(token, input_references)
+        prompt = _replace_video_image_placeholders(
+            prompt, [ref.post_id for ref in references]
+        )
         parent_post_id = references[0].post_id
     else:
         post = await create_media_post(
@@ -674,6 +699,9 @@ async def _generate_video_with_token(
                 video_length=segment_length,
                 preset=preset,
                 image_references=[r.content_url for r in references]
+                if references
+                else None,
+                image_reference_post_ids=[r.post_id for r in references]
                 if references
                 else None,
             )
