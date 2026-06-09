@@ -652,6 +652,7 @@
     "clearCurrent": "清空当前缓存",
     "deleteSelected": "删除选中",
     "clearSelected": "清理选中",
+    "colPreview": "缩略图",
     "colFileName": "文件名",
     "colSize": "大小",
     "colModified": "修改时间",

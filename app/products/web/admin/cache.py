@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.platform.config.snapshot import get_config
@@ -23,6 +24,22 @@ router = APIRouter(prefix="/cache", tags=["Admin - Cache"])
 # ---------------------------------------------------------------------------
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+_IMAGE_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+_VIDEO_MIME = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+}
 
 
 class ClearCacheRequest(BaseModel):
@@ -45,6 +62,25 @@ def _dir(media_type: str) -> Path:
 
 def _exts(media_type: str):
     return _IMAGE_EXTS if media_type == "image" else _VIDEO_EXTS
+
+
+def _validate_name(media_type: str, name: str) -> str:
+    value = (name or "").strip()
+    if not value:
+        raise AppError(
+            "Missing file name",
+            kind=ErrorKind.VALIDATION,
+            code="missing_file_name",
+            status=400,
+        )
+    if Path(value).name != value or Path(value).suffix.lower() not in _exts(media_type):
+        raise AppError(
+            "Invalid file name",
+            kind=ErrorKind.VALIDATION,
+            code="invalid_file_name",
+            status=400,
+        )
+    return value
 
 
 def _limit_mb(media_type: str) -> int:
@@ -121,6 +157,31 @@ async def list_local(
 ):
     media_type = type_ or cache_type
     return {"status": "success", **_list_files(media_type, page, page_size)}
+
+
+@router.get("/item/preview")
+async def preview_local_item(
+    cache_type: Literal["image", "video"] = "image",
+    type_: Literal["image", "video"] | None = Query(default=None, alias="type"),
+    name: str = "",
+):
+    media_type = type_ or cache_type
+    safe_name = _validate_name(media_type, name)
+    path = _dir(media_type) / safe_name
+    if not path.is_file():
+        raise AppError(
+            "File not found",
+            kind=ErrorKind.VALIDATION,
+            code="file_not_found",
+            status=404,
+        )
+    mime_map = _IMAGE_MIME if media_type == "image" else _VIDEO_MIME
+    return FileResponse(
+        path,
+        media_type=mime_map.get(path.suffix.lower(), "application/octet-stream"),
+        filename=safe_name,
+        content_disposition_type="inline",
+    )
 
 
 @router.post("/clear")

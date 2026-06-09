@@ -467,6 +467,7 @@
     "clearCurrent": "現在のキャッシュを消去",
     "deleteSelected": "選択項目を削除",
     "clearSelected": "選択項目を消去",
+    "colPreview": "サムネイル",
     "colFileName": "ファイル名",
     "colSize": "サイズ",
     "colModified": "更新日時",

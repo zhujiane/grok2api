@@ -467,6 +467,7 @@
     "clearCurrent": "Vider le cache courant",
     "deleteSelected": "Supprimer la sélection",
     "clearSelected": "Nettoyer la sélection",
+    "colPreview": "Miniature",
     "colFileName": "Nom du fichier",
     "colSize": "Taille",
     "colModified": "Dernière modification",

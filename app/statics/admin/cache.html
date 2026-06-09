@@ -195,6 +195,115 @@
       stroke-linejoin:round;
       fill:none;
     }
+    .thumb-cell { padding-top:8px; padding-bottom:8px }
+    .media-thumb {
+      width:64px;
+      height:42px;
+      border-radius:6px;
+      border:1px solid #ececec;
+      background:#f6f6f6;
+      object-fit:cover;
+      display:block;
+      cursor:pointer;
+    }
+    .media-thumb:hover { border-color:#d8d8d8 }
+    .media-thumb-placeholder {
+      width:64px;
+      height:42px;
+      border-radius:6px;
+      border:1px solid #ececec;
+      background:#f6f6f6;
+      color:#a3a3a3;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .media-thumb-placeholder svg {
+      width:18px;
+      height:18px;
+      stroke:currentColor;
+      stroke-linecap:round;
+      stroke-linejoin:round;
+      fill:none;
+    }
+    .preview-modal {
+      position:fixed;
+      inset:0;
+      z-index:1000;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      background:rgba(17,17,17,.72);
+    }
+    .preview-modal.open { display:flex }
+    .preview-modal-panel {
+      width:min(1040px, 100%);
+      max-height:calc(100vh - 48px);
+      border-radius:10px;
+      background:#111;
+      overflow:hidden;
+      box-shadow:0 18px 60px rgba(0,0,0,.28);
+      display:flex;
+      flex-direction:column;
+    }
+    .preview-modal-head {
+      min-height:44px;
+      padding:0 10px 0 16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+      color:#f5f5f5;
+      background:#171717;
+    }
+    .preview-modal-title {
+      min-width:0;
+      font-family:'Geist Mono','Courier New',monospace;
+      font-size:12px;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .preview-modal-close {
+      width:30px;
+      height:30px;
+      border-radius:6px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      color:#d4d4d4;
+      flex:0 0 auto;
+    }
+    .preview-modal-close:hover { background:#262626; color:#fff }
+    .preview-modal-close svg {
+      width:16px;
+      height:16px;
+      stroke:currentColor;
+      stroke-linecap:round;
+      stroke-linejoin:round;
+      fill:none;
+    }
+    .preview-modal-body {
+      min-height:180px;
+      max-height:calc(100vh - 92px);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      background:#0b0b0b;
+    }
+    .preview-modal-body img,
+    .preview-modal-body video {
+      max-width:100%;
+      max-height:calc(100vh - 92px);
+      display:block;
+    }
+    .preview-modal-body img { object-fit:contain }
+    .preview-modal-body video {
+      width:100%;
+      height:auto;
+      background:#000;
+    }
     .row-value {
       min-width:0;
       font-family:'Geist Mono','Courier New',monospace;
@@ -389,6 +498,7 @@
         <thead>
           <tr>
             <th style="width:36px"><input type="checkbox" class="cb" id="cb-local-all" onchange="toggleAllLocal(this.checked)"></th>
+            <th style="width:92px" data-i18n="cache.colPreview">缩略图</th>
             <th data-i18n="cache.colFileName">文件名</th>
             <th style="width:100px" data-i18n="cache.colSize">大小</th>
             <th style="width:160px" data-i18n="cache.colModified">修改时间</th>
@@ -441,6 +551,18 @@
 
 </main>
 
+<div class="preview-modal" id="preview-modal" onclick="handlePreviewBackdrop(event)" aria-hidden="true">
+  <div class="preview-modal-panel" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
+    <div class="preview-modal-head">
+      <div class="preview-modal-title" id="preview-modal-title"></div>
+      <button class="preview-modal-close" onclick="closePreviewModal()" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 24 24" stroke-width="2"><path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="preview-modal-body" id="preview-modal-body"></div>
+  </div>
+</div>
+
 <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
@@ -466,6 +588,7 @@ const _assetSel = new Set();
 let _assetTaskId = null;
 let _assetEs = null;
 let _assetLoaded = false;
+let _adminPreviewKey = '';
 let _localViewVersion = 0;
 let _localViewCacheVersion = -1;
 let _localViewCache = null;
@@ -721,12 +844,13 @@ function _renderTable(view = getLocalView()) {
   const items = view.items;
   syncLocalSelectAll(view);
   if (!items.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="table-empty">${_esc(tr('cache.emptyLocal', null, '暂无缓存文件'))}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="table-empty">${_esc(tr('cache.emptyLocal', null, '暂无缓存文件'))}</td></tr>`;
     return;
   }
   tbody.innerHTML = items.map((f) => `
     <tr>
       <td><input type="checkbox" class="cb local-row-cb" data-name="${_esc(f.name)}" ${_localSel.has(f.name) ? 'checked' : ''} onchange="toggleLocalRow(this)"></td>
+      <td class="thumb-cell">${renderLocalThumb(f.name)}</td>
       <td>
         <div class="row-name">
           <span class="row-icon" aria-hidden="true">
@@ -740,7 +864,7 @@ function _renderTable(view = getLocalView()) {
       </td>
       <td>${_fmtBytes(f.size_bytes)}</td>
       <td>${_fmtTime(f.modified_at)}</td>
-      <td><div class="row-actions"><button class="row-action" onclick="viewFile('${_esc(f.name)}')" title="${_esc(tr('cache.actionView', null, '查看'))}" aria-label="${_esc(tr('cache.actionView', null, '查看'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg></button><button class="row-action row-action-danger" onclick="deleteFile('${_esc(f.name)}')" title="${_esc(tr('cache.actionDelete', null, '删除'))}" aria-label="${_esc(tr('cache.actionDelete', null, '删除'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg></button></div></td>
+      <td><div class="row-actions"><button class="row-action" onclick="${localFileAction('viewFile', f.name)}" title="${_esc(tr('cache.actionView', null, '查看'))}" aria-label="${_esc(tr('cache.actionView', null, '查看'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg></button><button class="row-action row-action-danger" onclick="${localFileAction('deleteFile', f.name)}" title="${_esc(tr('cache.actionDelete', null, '删除'))}" aria-label="${_esc(tr('cache.actionDelete', null, '删除'))}"><svg viewBox="0 0 24 24" stroke-width="1.8"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v7"/><path d="M12 10v7"/><path d="M16 10v7"/><path d="M7 7l1 13h8l1-13"/></svg></button></div></td>
     </tr>`).join('');
   syncLocalSelectAll(view);
 }
@@ -825,17 +949,68 @@ function viewFile(name) {
     showToast(tr('cache.viewUnavailable', null, '当前文件暂不支持查看'), 'error');
     return;
   }
-  window.open(url, '_blank', 'noopener');
+  openPreviewModal(name, url, _type);
+}
+
+function openPreviewModal(name, url, mediaType) {
+  const modal = document.getElementById('preview-modal');
+  const body = document.getElementById('preview-modal-body');
+  const title = document.getElementById('preview-modal-title');
+  if (!modal || !body || !title) return;
+
+  title.textContent = name;
+  body.innerHTML = mediaType === 'video'
+    ? `<video src="${_esc(url)}" controls autoplay playsinline></video>`
+    : `<img src="${_esc(url)}" alt="${_esc(name)}">`;
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+}
+
+function closePreviewModal() {
+  const modal = document.getElementById('preview-modal');
+  const body = document.getElementById('preview-modal-body');
+  if (!modal || !body) return;
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+  body.innerHTML = '';
+  document.body.style.overflow = '';
+}
+
+function handlePreviewBackdrop(event) {
+  if (event.target?.id === 'preview-modal') {
+    closePreviewModal();
+  }
+}
+
+function renderLocalThumb(name) {
+  const url = localFileUrl(name);
+  const label = _esc(tr('cache.actionView', null, '查看'));
+  if (!url) {
+    return `<span class="media-thumb-placeholder" aria-hidden="true">${mediaPlaceholderIcon()}</span>`;
+  }
+  const safeUrl = _esc(url);
+  const safeName = _esc(name);
+  if (_type === 'video') {
+    return `<video class="media-thumb" src="${safeUrl}" preload="metadata" muted playsinline onclick="${localFileAction('viewFile', name)}" title="${label}" aria-label="${label}"></video>`;
+  }
+  return `<img class="media-thumb" src="${safeUrl}" loading="lazy" alt="${safeName}" onclick="${localFileAction('viewFile', name)}" title="${label}" aria-label="${label}">`;
+}
+
+function localFileAction(fnName, name) {
+  return `${fnName}(decodeURIComponent('${encodeURIComponent(String(name || ''))}'))`;
+}
+
+function mediaPlaceholderIcon() {
+  return _type === 'image'
+    ? '<svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M21 15l-4.5-4.5L7 20"/></svg>'
+    : '<svg viewBox="0 0 24 24" stroke-width="1.8"><polygon points="16 12 10 8.5 10 15.5 16 12"/><rect x="4" y="5" width="16" height="14" rx="2"/></svg>';
 }
 
 function localFileUrl(name) {
   const raw = String(name || '');
-  const dot = raw.lastIndexOf('.');
-  if (dot <= 0) return '';
-  const id = raw.slice(0, dot);
-  return _type === 'video'
-    ? `/v1/files/video?id=${encodeURIComponent(id)}`
-    : `/v1/files/image?id=${encodeURIComponent(id)}`;
+  if (!raw || !_adminPreviewKey) return '';
+  return `${ADMIN_API}/cache/item/preview?type=${encodeURIComponent(_type)}&name=${encodeURIComponent(raw)}&app_key=${encodeURIComponent(_adminPreviewKey)}`;
 }
 
 async function loadAssets() {
@@ -1246,6 +1421,10 @@ function _esc(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closePreviewModal();
+});
+
 (async () => {
   await waitI18n();
   applyCacheI18n();
@@ -1256,6 +1435,7 @@ function _esc(value) {
     location.href = '/admin/login';
     return;
   }
+  _adminPreviewKey = key;
   loadStats();
   loadList();
   _renderAssets();
