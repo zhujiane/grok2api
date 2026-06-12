@@ -11,7 +11,7 @@ import html
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable
 from urllib.parse import urlparse
@@ -54,6 +54,7 @@ from ._format import (
     make_thinking_chunk,
 )
 from .chat import _fail_sync, _quota_sync, _feedback_kind
+from .video_jobs import get_video_job_store
 
 _IMAGE_MEDIA_TYPE = "MEDIA_POST_TYPE_IMAGE"
 _VIDEO_MEDIA_TYPE = "MEDIA_POST_TYPE_VIDEO"
@@ -135,6 +136,29 @@ class _VideoJob:
 
 _VIDEO_JOBS: dict[str, _VideoJob] = {}
 _VIDEO_JOBS_LOCK = asyncio.Lock()
+
+
+def _video_job_from_dict(data: dict[str, Any]) -> _VideoJob | None:
+    try:
+        fields = _VideoJob.__dataclass_fields__
+        kwargs = {key: data[key] for key in fields if key in data}
+        return _VideoJob(**kwargs)
+    except Exception as exc:
+        logger.warning("video job restore failed: error={}", exc)
+        return None
+
+
+async def _persist_video_job(job: _VideoJob) -> None:
+    store = await get_video_job_store()
+    await store.put(job.id, asdict(job))
+
+
+async def _load_video_job(video_id: str) -> _VideoJob | None:
+    store = await get_video_job_store()
+    data = await store.get(video_id)
+    if data is None:
+        return None
+    return _video_job_from_dict(data)
 
 
 def _build_message(prompt: str, preset: str) -> str:
@@ -824,11 +848,20 @@ async def _run_video_with_account(
 async def _put_video_job(job: _VideoJob) -> None:
     async with _VIDEO_JOBS_LOCK:
         _VIDEO_JOBS[job.id] = job
+    await _persist_video_job(job)
 
 
 async def get_video_job(video_id: str) -> _VideoJob | None:
     async with _VIDEO_JOBS_LOCK:
-        return _VIDEO_JOBS.get(video_id)
+        job = _VIDEO_JOBS.get(video_id)
+        if job is not None:
+            return job
+    job = await _load_video_job(video_id)
+    if job is None:
+        return None
+    async with _VIDEO_JOBS_LOCK:
+        _VIDEO_JOBS[job.id] = job
+    return job
 
 
 async def _expire_video_job(video_id: str, ttl_s: int = _VIDEO_JOB_TTL_S) -> None:
@@ -844,6 +877,7 @@ async def _set_job_status(
         job.status = status
         if progress is not None:
             job.progress = max(0, min(100, progress))
+    await _persist_video_job(job)
 
 
 def _job_error_payload(message: str) -> dict[str, Any]:
@@ -934,11 +968,13 @@ async def _run_video_job(
             job.video_url = artifact.video_url
             job.content_path = str(path)
             job.remixed_from_video_id = artifact.remixed_from_video_id
+        await _persist_video_job(job)
     except Exception as exc:
         logger.exception("video job failed: job_id={} error={}", job.id, exc)
         async with _VIDEO_JOBS_LOCK:
             job.status = "failed"
             job.error = _job_error_payload(_exception_message(exc))
+        await _persist_video_job(job)
 
 
 async def create_video(
