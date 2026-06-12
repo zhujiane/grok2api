@@ -8,30 +8,6 @@ services:
     command: ["python3", "/scripts/init_proxy_config.py"]
     restart: "no"
 
-  # ── WARP: Cloudflare 出口代理 ─────────────────────────────────────────────
-  warp-proxy:
-    image: caomingjun/warp:latest
-    container_name: warp-proxy
-    restart: unless-stopped
-    environment:
-      - WARP_SLEEP=2
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=0
-      - net.ipv4.conf.all.src_valid_mark=1
-
-  # ── Privoxy: HTTP 代理，转发到 WARP SOCKS5 ───────────────────────────────
-  privoxy:
-    image: ghcr.io/jiujiu532/privoxy-warp:latest
-    container_name: privoxy
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:40080:8118"
-    depends_on:
-      - warp-proxy
-
   # ── FlareSolverr: 自动解 Cloudflare 挑战 ────────────────────────────────
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
@@ -65,9 +41,5 @@ services:
     depends_on:
       init-config:
         condition: service_completed_successfully
-      warp-proxy:
-        condition: service_started
-      privoxy:
-        condition: service_started
       flaresolverr:
         condition: service_started

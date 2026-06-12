@@ -28,7 +28,13 @@
         "ACCOUNT_STORAGE": "postgresql",
         "ACCOUNT_POSTGRESQL_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/grok2api",
         "ACCOUNT_REDIS_URL": "redis://localhost:6379/0",
-        "FLARESOLVERR_URL": "http://localhost:8191/"
+        "FLARESOLVERR_URL": "http://127.0.0.1:8191/",
+        "GROK_PROXY__EGRESS__MODE": "single_proxy",
+        "GROK_PROXY__EGRESS__PROXY_URL": "http://127.0.0.1:40080",
+        "GROK_PROXY__EGRESS__RESOURCE_PROXY_URL": "http://127.0.0.1:40080",
+        "GROK_PROXY__CLEARANCE__MODE": "flaresolverr",
+        "GROK_PROXY__CLEARANCE__FLARESOLVERR_URL": "http://127.0.0.1:8191/",
+        "GROK_PROXY__CLEARANCE__FLARESOLVERR_PROXY_URL": "http://privoxy:8118"
       },
       "console": "integratedTerminal",
       "justMyCode": false

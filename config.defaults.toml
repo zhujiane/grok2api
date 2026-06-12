@@ -96,6 +96,8 @@ user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
 browser = "chrome136"
 # FlareSolverr 服务地址
 flaresolverr_url = ""
+# FlareSolverr 容器内部可访问的代理地址；为空时使用 proxy.egress.proxy_url
+flaresolverr_proxy_url = ""
 # 挑战等待超时（秒）
 timeout_sec = 60
 # Clearance 刷新间隔（秒）

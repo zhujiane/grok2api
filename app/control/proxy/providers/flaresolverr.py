@@ -30,20 +30,22 @@ class FlareSolverrClearanceProvider:
         if mode != ClearanceMode.FLARESOLVERR:
             return None
         fs_url      = cfg.get_str("proxy.clearance.flaresolverr_url", "")
+        fs_proxy_url = cfg.get_str("proxy.clearance.flaresolverr_proxy_url", "")
         timeout_sec = cfg.get_int("proxy.clearance.timeout_sec", 60)
         if not fs_url:
             return None
+        effective_proxy_url = fs_proxy_url or proxy_url
 
         result = await self._solve(
             fs_url      = fs_url,
-            proxy_url   = proxy_url,
+            proxy_url   = effective_proxy_url,
             timeout_sec = timeout_sec,
             target_url  = target_url,
         )
         if not result:
             logger.warning(
                 "flaresolverr clearance refresh failed: affinity={} proxy={} target={}",
-                affinity_key, proxy_url or "<direct>", target_url,
+                affinity_key, effective_proxy_url or "<direct>", target_url,
             )
             return None
         host = result.get("clearance_host", "grok.com")
