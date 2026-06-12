@@ -5,6 +5,7 @@
       "name": "Grok2API: granian",
       "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "module": "granian",
       "args": [
         "--interface",
