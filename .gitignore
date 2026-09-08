@@ -41,6 +41,8 @@ __pycache__/
 # Frontend
 /.pnpm-store/
 /frontend/node_modules/
+/tools/statsig-signer/node_modules/
+/tools/statsig-signer/data/
 /frontend/dist/
 /frontend/.cache/
 /frontend/*.tsbuildinfo
