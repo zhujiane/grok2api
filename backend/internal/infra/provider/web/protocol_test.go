@@ -297,6 +297,55 @@ func TestNormalizeChatNestedFileData(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponsesInputVideo(t *testing.T) {
+	dataURI := chatVideoDataURI()
+	input, _ := json.Marshal([]any{map[string]any{
+		"role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": "看这段视频"},
+			map[string]any{"type": "input_video", "video_url": dataURI, "filename": "clip.mp4"},
+			map[string]any{"type": "input_text", "text": "发生了什么"},
+		},
+	}})
+	value, err := normalizeOpenAIInput(openAIRequest{Input: input}, "responses")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Prompt != "[user]\n看这段视频\n发生了什么" || !slices.Equal(value.Attachments, []chatAttachmentInput{{Source: dataURI, Filename: "clip.mp4"}}) {
+		t.Fatalf("normalized video input = %#v", value)
+	}
+	file, err := parseChatFileDataURI(dataURI, "clip.mp4", 1<<20)
+	if err != nil || file.MIMEType != "video/mp4" || file.Filename != "clip.mp4" || len(file.Data) == 0 {
+		t.Fatalf("video file=%#v err=%v", file, err)
+	}
+}
+
+func TestNormalizeChatVideoURLAndInputFile(t *testing.T) {
+	dataURI := chatVideoDataURI()
+	content, _ := json.Marshal([]any{
+		map[string]any{"type": "video_url", "video_url": map[string]any{"url": dataURI}},
+		map[string]any{"type": "input_file", "file_data": dataURI, "filename": "demo.mp4"},
+	})
+	value, err := normalizeOpenAIInput(openAIRequest{Messages: []chatMessage{{Role: "user", Content: content}}}, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(value.Attachments, []chatAttachmentInput{{Source: dataURI}, {Source: dataURI, Filename: "demo.mp4"}}) {
+		t.Fatalf("normalized chat video = %#v", value)
+	}
+	badContent, _ := json.Marshal([]any{map[string]any{"type": "input_video", "file_id": "file_external"}})
+	if _, err := normalizeOpenAIInput(openAIRequest{Messages: []chatMessage{{Role: "user", Content: badContent}}}, "chat"); err == nil || !strings.Contains(err.Error(), "file_id") {
+		t.Fatalf("video file_id error=%v", err)
+	}
+}
+
+func chatVideoPayload() []byte {
+	return append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x01}, 64)...)
+}
+
+func chatVideoDataURI() string {
+	return "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(chatVideoPayload())
+}
+
 func TestParseChatImageDataURIValidatesContent(t *testing.T) {
 	value := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	image, err := parseChatImageDataURI(value, 1<<20)
@@ -341,6 +390,9 @@ func TestRemoteChatImageHeadersNeverLeakCredentials(t *testing.T) {
 	fileHeaders := remoteFileHeaders("test-agent")
 	if fileHeaders.Get("User-Agent") != "test-agent" || fileHeaders.Get("Cookie") != "" || fileHeaders.Get("Authorization") != "" {
 		t.Fatalf("remote file headers = %#v", fileHeaders)
+	}
+	if !strings.Contains(fileHeaders.Get("Accept"), "video/mp4") || !strings.Contains(fileHeaders.Get("Accept"), "video/quicktime") {
+		t.Fatalf("remote file Accept missing video types: %q", fileHeaders.Get("Accept"))
 	}
 }
 
@@ -444,6 +496,106 @@ func TestChatImageUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 	result, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusOK || !bytes.Contains(result, []byte(`"content":"seen"`)) {
 		t.Fatalf("status=%d body=%s err=%v", response.StatusCode, result, err)
+	}
+}
+
+func TestChatVideoUploadFeedsFileMetadataIntoConversation(t *testing.T) {
+	dataURI := chatVideoDataURI()
+	var uploadedType, uploadedName string
+	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
+		switch request.URL.Path {
+		case "/http/upload-file-v2/direct":
+			if err := request.ParseMultipartForm(2 << 20); err != nil {
+				t.Errorf("multipart: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Errorf("file part: %v", err)
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			content, _ := io.ReadAll(file)
+			uploadedName = header.Filename
+			uploadedType = header.Header.Get("Content-Type")
+			if uploadedName != "clip.mp4" || uploadedType != "video/mp4" || len(content) == 0 || request.FormValue("file_source") != "" {
+				t.Errorf("upload filename=%q content-type=%q bytes=%d source=%q", uploadedName, uploadedType, len(content), request.FormValue("file_source"))
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"uploadId":"upload_1","fileMetadata":{"fileMetadataId":"file_meta_video","fileUri":"users/test/file_meta_video/content"}}`)
+		case "/rest/app-chat/upload-file":
+			t.Error("不应调用旧版 Base64 上传接口")
+			writer.WriteHeader(http.StatusInternalServerError)
+		case "/ws/mgw/":
+			connection, err := (&websocket.Upgrader{CheckOrigin: func(*fhttp.Request) bool { return true }}).Upgrade(writer, request, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer connection.Close()
+			var initial map[string]any
+			if err := connection.ReadJSON(&initial); err != nil {
+				t.Errorf("read session.create: %v", err)
+				return
+			}
+			initialID := initial["event"].(map[string]any)["event_id"].(string)
+			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "session.created", "client_event_id": initialID}})
+			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "conv_1"}}})
+			var item map[string]any
+			if err := connection.ReadJSON(&item); err != nil {
+				t.Errorf("read conversation.item.create: %v", err)
+				return
+			}
+			itemEvent := item["event"].(map[string]any)
+			attachments, _ := itemEvent["file_attachment_ids"].([]any)
+			if len(attachments) != 1 || attachments[0] != "file_meta_video" {
+				t.Errorf("file_attachment_ids = %#v", itemEvent["file_attachment_ids"])
+			}
+			var create map[string]any
+			if err := connection.ReadJSON(&create); err != nil || create["event"].(map[string]any)["type"] != "response.create" {
+				t.Errorf("read response.create: value=%#v err=%v", create, err)
+				return
+			}
+			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.chunk", "chunk": map[string]any{"text": map[string]any{"text": "watched", "channel": "CHANNEL_ASSISTANT_RESPONSE"}}}})
+			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.done", "response": map[string]any{"id": "parent_1", "status": "completed"}}})
+		default:
+			fhttp.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	content, _ := json.Marshal([]any{
+		map[string]any{"type": "text", "text": "分析这段视频"},
+		map[string]any{"type": "input_file", "file_data": dataURI, "filename": "clip.mp4"},
+	})
+	body, _ := json.Marshal(map[string]any{
+		"model": "grok-chat-fast", "messages": []any{map[string]any{"role": "user", "content": json.RawMessage(content)}},
+	})
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, UserID: "497f19f8-49d4-458a-bee4-43ec3dcaf8ca", EncryptedAccessToken: encrypted}, Method: http.MethodPost,
+		Path: "/responses", Body: body, Model: "grok-chat-fast", Operation: "chat",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	result, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || !bytes.Contains(result, []byte(`"content":"watched"`)) {
+		t.Fatalf("status=%d body=%s err=%v", response.StatusCode, result, err)
+	}
+	if uploadedName != "clip.mp4" || uploadedType != "video/mp4" {
+		t.Fatalf("uploaded name=%q type=%q", uploadedName, uploadedType)
 	}
 }
 

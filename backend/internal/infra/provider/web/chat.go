@@ -859,6 +859,15 @@ func contentTextAndAttachments(raw json.RawMessage) (string, []chatAttachmentInp
 				return "", nil, err
 			}
 			attachments = append(attachments, attachment)
+		case "input_video", "video_url", "video":
+			if value := extractVideoURL(part); value != "" {
+				filename, _ := part["filename"].(string)
+				attachments = append(attachments, chatAttachmentInput{Source: value, Filename: strings.TrimSpace(filename)})
+			} else if fileID, _ := part["file_id"].(string); fileID != "" {
+				return "", nil, errors.New("Grok Web 对话暂不支持 input_video.file_id，请使用 video_url、file_url 或 Base64 data URI")
+			} else {
+				return "", nil, errors.New("视频内容缺少 video_url")
+			}
 		case "input_audio":
 			return "", nil, errors.New("Grok Web 对话暂不支持 input_audio 内容")
 		default:
@@ -893,13 +902,24 @@ func extractFileAttachment(part map[string]any) (chatAttachmentInput, error) {
 }
 
 func extractImageURL(part map[string]any) string {
-	value := part["image_url"]
+	return extractMediaURL(part, "image_url")
+}
+
+func extractVideoURL(part map[string]any) string {
+	if value := extractMediaURL(part, "video_url"); value != "" {
+		return value
+	}
+	return extractMediaURL(part, "url")
+}
+
+func extractMediaURL(part map[string]any, key string) string {
+	value := part[key]
 	if text, ok := value.(string); ok {
-		return text
+		return strings.TrimSpace(text)
 	}
 	if object, ok := value.(map[string]any); ok {
 		text, _ := object["url"].(string)
-		return text
+		return strings.TrimSpace(text)
 	}
 	return ""
 }

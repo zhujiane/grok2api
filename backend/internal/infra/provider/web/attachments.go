@@ -16,13 +16,17 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/pkg/netguard"
 )
 
 const (
 	maxChatAttachments        = 8
 	maxChatAttachmentTotal    = 64 << 20
+	maxChatVideoBytes         = 150 << 20
 	maxRemoteAttachmentURLLen = 8192
+	chatRemoteImageTimeout    = 30 * time.Second
+	chatRemoteFileTimeout     = 2 * time.Minute
 )
 
 var (
@@ -63,7 +67,7 @@ func (a *Adapter) prepareChatAttachments(ctx context.Context, cfg Config, lease 
 	}
 	pending := make([]provider.ImageInput, 0, len(inputs))
 	seen := make(map[string]struct{}, len(inputs))
-	total := int64(0)
+	var docTotal, videoTotal int64
 	for _, input := range inputs {
 		input.Source = strings.TrimSpace(input.Source)
 		key := fmt.Sprintf("%t\x00%s\x00%s", input.Image, input.Filename, input.Source)
@@ -75,16 +79,23 @@ func (a *Adapter) prepareChatAttachments(ctx context.Context, cfg Config, lease 
 		if input.Image {
 			file, err = a.loadChatImage(ctx, lease, input.Source, cfg.MaxInputImageBytes)
 		} else {
-			file, err = a.loadChatFile(ctx, lease, input.Source, input.Filename, cfg.MaxInputImageBytes)
+			file, err = a.loadChatFile(ctx, lease, input.Source, input.Filename, cfg.MaxInputImageBytes, maxChatVideoBytes)
 		}
 		if err != nil {
 			return nil, err
 		}
 		size := int64(len(file.Data))
-		if size > maxChatAttachmentTotal || total > maxChatAttachmentTotal-size {
-			return nil, fmt.Errorf("%w: 总大小不能超过 64 MiB", errInvalidChatAttachment)
+		if supportedChatVideoMIME(file.MIMEType) {
+			if size > maxChatVideoBytes || videoTotal > maxChatVideoBytes-size {
+				return nil, fmt.Errorf("%w: 视频总大小不能超过 150 MiB", errInvalidChatAttachment)
+			}
+			videoTotal += size
+		} else {
+			if size > maxChatAttachmentTotal || docTotal > maxChatAttachmentTotal-size {
+				return nil, fmt.Errorf("%w: 总大小不能超过 64 MiB", errInvalidChatAttachment)
+			}
+			docTotal += size
 		}
-		total += size
 		seen[key] = struct{}{}
 		pending = append(pending, file)
 	}
@@ -110,7 +121,7 @@ func (a *Adapter) loadChatImage(ctx context.Context, lease *egress.Lease, input 
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, chatRemoteImageTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
 	if err != nil {
@@ -141,15 +152,23 @@ func (a *Adapter) loadChatImage(ctx context.Context, lease *egress.Lease, input 
 	return provider.ImageInput{Filename: imageFilename(target.originalURL, mimeType), MIMEType: mimeType, Data: raw}, nil
 }
 
-func (a *Adapter) loadChatFile(ctx context.Context, lease *egress.Lease, input, filename string, maxBytes int64) (provider.ImageInput, error) {
+func (a *Adapter) loadChatFile(ctx context.Context, lease *egress.Lease, input, filename string, docMaxBytes, videoMaxBytes int64) (provider.ImageInput, error) {
+	maxBytes := docMaxBytes
+	if videoMaxBytes > maxBytes {
+		maxBytes = videoMaxBytes
+	}
 	if strings.HasPrefix(strings.ToLower(input), "data:") {
-		return parseChatFileDataURI(input, filename, maxBytes)
+		file, err := parseChatFileDataURI(input, filename, maxBytes)
+		if err != nil {
+			return provider.ImageInput{}, err
+		}
+		return limitChatFileByType(file, docMaxBytes, videoMaxBytes)
 	}
 	target, err := validateRemoteAttachmentURL(ctx, input, errInvalidChatFile)
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, chatRemoteFileTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.fetchURL.String(), nil)
 	if err != nil {
@@ -176,7 +195,21 @@ func (a *Adapter) loadChatFile(ctx context.Context, lease *egress.Lease, input, 
 	if err != nil {
 		return provider.ImageInput{}, err
 	}
-	return provider.ImageInput{Filename: chatFileName(filename, target.originalURL, mimeType), MIMEType: mimeType, Data: raw}, nil
+	file := provider.ImageInput{Filename: chatFileName(filename, target.originalURL, mimeType), MIMEType: mimeType, Data: raw}
+	return limitChatFileByType(file, docMaxBytes, videoMaxBytes)
+}
+
+func limitChatFileByType(file provider.ImageInput, docMaxBytes, videoMaxBytes int64) (provider.ImageInput, error) {
+	limit := docMaxBytes
+	label := "文件"
+	if supportedChatVideoMIME(file.MIMEType) {
+		limit = videoMaxBytes
+		label = "视频"
+	}
+	if limit <= 0 || int64(len(file.Data)) <= limit {
+		return file, nil
+	}
+	return provider.ImageInput{}, fmt.Errorf("%w: %s超过 %d MiB", errInvalidChatFile, label, limit>>20)
 }
 
 func remoteImageHeaders(userAgent string) http.Header {
@@ -188,7 +221,7 @@ func remoteImageHeaders(userAgent string) http.Header {
 
 func remoteFileHeaders(userAgent string) http.Header {
 	value := http.Header{}
-	value.Set("Accept", "application/pdf,text/*,application/json,application/xml,application/rtf,application/msword,application/zip,image/*,*/*;q=0.1")
+	value.Set("Accept", "application/pdf,text/*,application/json,application/xml,application/rtf,application/msword,application/zip,image/*,video/mp4,video/quicktime,video/webm,*/*;q=0.1")
 	value.Set("User-Agent", userAgent)
 	return value
 }
@@ -271,6 +304,9 @@ func validatedChatFileMIME(data []byte, declared, filename string) (string, erro
 	if supportedChatImageMIME(declared) || supportedChatImageMIME(detected) {
 		return validatedImageMIME(data, declared)
 	}
+	if supportedChatVideoMIME(declared) || supportedChatVideoMIME(detected) || sniffChatVideoMIME(data) != "" {
+		return validatedChatVideoMIME(data, declared)
+	}
 	if supportedChatFileMIME(declared) {
 		return declared, nil
 	}
@@ -278,6 +314,55 @@ func validatedChatFileMIME(data []byte, declared, filename string) (string, erro
 		return detected, nil
 	}
 	return "", fmt.Errorf("%w: 不支持该文件格式", errInvalidChatFile)
+}
+
+func validatedChatVideoMIME(data []byte, declared string) (string, error) {
+	sniffed := sniffChatVideoMIME(data)
+	if sniffed == "" {
+		return "", fmt.Errorf("%w: 不是有效视频内容", errInvalidChatFile)
+	}
+	declared = strings.ToLower(strings.TrimSpace(strings.Split(declared, ";")[0]))
+	if declared != "" && declared != "application/octet-stream" && !supportedChatVideoMIME(declared) {
+		return "", fmt.Errorf("%w: Content-Type 与实际内容不一致", errInvalidChatFile)
+	}
+	if supportedChatVideoMIME(declared) {
+		return declared, nil
+	}
+	return sniffed, nil
+}
+
+func sniffChatVideoMIME(data []byte) string {
+	detected := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0]))
+	if supportedChatVideoMIME(detected) {
+		return detected
+	}
+	if looksLikeWebM(data) {
+		return "video/webm"
+	}
+	if looksLikeMP4(data) {
+		if looksLikeQuickTime(data) {
+			return "video/quicktime"
+		}
+		return "video/mp4"
+	}
+	return ""
+}
+
+func looksLikeMP4(header []byte) bool {
+	return len(header) >= 12 && string(header[4:8]) == "ftyp"
+}
+
+func looksLikeQuickTime(header []byte) bool {
+	return looksLikeMP4(header) && string(header[8:12]) == "qt  "
+}
+
+func looksLikeWebM(header []byte) bool {
+	return len(header) >= 4 && header[0] == 0x1A && header[1] == 0x45 && header[2] == 0xDF && header[3] == 0xA3
+}
+
+func supportedChatVideoMIME(value string) bool {
+	_, ok := mediafile.VideoExtension(value)
+	return ok
 }
 
 func chatFileMIMEFromExtension(extension string) string {
@@ -310,6 +395,12 @@ func chatFileMIMEFromExtension(extension string) string {
 		return "text/html"
 	case ".txt", ".log":
 		return "text/plain"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".mov":
+		return "video/quicktime"
+	case ".webm":
+		return "video/webm"
 	default:
 		return ""
 	}
@@ -442,6 +533,9 @@ func chatFileExtension(mimeType string) string {
 	case "text/plain":
 		return ".txt"
 	default:
+		if extension, ok := mediafile.VideoExtension(mimeType); ok {
+			return extension
+		}
 		return imageExtension(mimeType)
 	}
 }
