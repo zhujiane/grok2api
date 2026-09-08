@@ -251,8 +251,8 @@ func boundWebMediaDiagnostic(value string, limit int) string {
 }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
-	if strings.TrimSpace(request.ImageURL) != "" || len(request.ReferenceURLs) > 0 {
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Grok Web 当前仅支持文本生视频；图片视频请使用 Build 或 Console Provider"))
+	if len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0 {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Grok Web 当前仅支持文本生视频与首帧图生视频；参考图视频请使用 Build 或 Console Provider"))
 	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
@@ -274,7 +274,22 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if resolution == "" {
 		resolution = "720p"
 	}
-	payload := videoCreatePayload(request.Prompt, ratio, resolution, segments[0])
+	var inputAssets []string
+	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
+		image, loadErr := a.loadChatImage(ctx, lease, imageURL, cfg.MaxInputImageBytes)
+		if loadErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, loadErr)
+		}
+		uploaded, uploadErr := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "video_first_frame_upload")
+		if uploadErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, uploadErr)
+		}
+		if uploaded.MetadataID == "" {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("上传首帧图片成功但上游未返回 fileMetadataId"))
+		}
+		inputAssets = []string{uploaded.MetadataID}
+	}
+	payload := videoCreatePayload(request.Prompt, ratio, resolution, segments[0], inputAssets)
 	response, err := a.postJSON(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.VideoTimeoutSeconds)*time.Second)
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
@@ -540,10 +555,23 @@ func applyFreeWebVideoDurationCap(seconds, cap int, credential account.Credentia
 }
 
 // videoCreatePayload mirrors the current Grok Imagine browser request.
-// In particular, the generation parameters belong in mediaGenInput rather
-// than the legacy modelConfigOverride map. Keeping this shape explicit also
-// prevents text-to-video from depending on a synthetic media post.
-func videoCreatePayload(prompt, ratio, resolution string, seconds int) map[string]any {
+// Text-to-video uses mediaGenInput.textToVideo. First-frame image-to-video
+// uploads the still through the Imagine file API and switches the same
+// conversation endpoint to mediaGenInput.imageToVideo + inputAssets,
+// matching image-edit's imageToImage shape. Reference-to-video is not
+// part of the Free Web surface.
+func videoCreatePayload(prompt, ratio, resolution string, seconds int, inputAssets []string) map[string]any {
+	generation := map[string]any{
+		"prompt":         prompt,
+		"aspectRatio":    ratio,
+		"duration":       seconds,
+		"resolutionName": resolution,
+	}
+	mediaKey := "textToVideo"
+	if len(inputAssets) > 0 {
+		mediaKey = "imageToVideo"
+		generation["inputAssets"] = append([]string(nil), inputAssets...)
+	}
 	return map[string]any{
 		"modelName":            "imagine-video-gen",
 		"message":              prompt + " --mode=custom",
@@ -557,12 +585,7 @@ func videoCreatePayload(prompt, ratio, resolution string, seconds int) map[strin
 			},
 		},
 		"mediaGenInput": map[string]any{
-			"textToVideo": map[string]any{
-				"prompt":         prompt,
-				"aspectRatio":    ratio,
-				"duration":       seconds,
-				"resolutionName": resolution,
-			},
+			mediaKey: generation,
 		},
 		"kind": "CONVERSATION_KIND_IMAGINE",
 	}

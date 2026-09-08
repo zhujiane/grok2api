@@ -795,7 +795,7 @@ func TestSelectorAllowsBasicOnlyForConfirmedWebVideoQuota(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	if err := accounts.SaveQuotaWindows(ctx, basic.ID, account.WebTierBasic, now, []account.QuotaWindow{{
-		AccountID: basic.ID, Mode: account.QuotaModeWebVideo720p, Remaining: 1, Total: 1,
+		AccountID: basic.ID, Mode: account.QuotaModeWebVideo, Remaining: 1, Total: 1,
 		SyncedAt: &now, Source: account.QuotaSourceUpstream,
 	}}); err != nil {
 		t.Fatal(err)
@@ -804,16 +804,16 @@ func TestSelectorAllowsBasicOnlyForConfirmedWebVideoQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), webVideoTierOrder{}, time.Hour, time.Second, time.Minute)
-	lease, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo720p, "", nil, false)
+	lease, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo, "", nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease.Credential.ID != basic.ID || lease.QuotaMode != account.QuotaModeWebVideo720p {
-		t.Fatalf("720p Basic video lease = %#v", lease)
+	if lease.Credential.ID != basic.ID || lease.QuotaMode != account.QuotaModeWebVideo {
+		t.Fatalf("480p Basic video lease = %#v", lease)
 	}
 	lease.Release()
-	if _, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo, "", nil, false); err == nil {
-		t.Fatal("Basic account was selected for an unverified Web video quota product")
+	if _, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo720p, "", nil, false); err == nil {
+		t.Fatal("Basic account was selected for Super-only 720p Web video")
 	}
 }
 
@@ -1803,7 +1803,7 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 func TestBoundUpstreamRetryAfter(t *testing.T) {
 	selector := &Selector{cooldownMax: time.Minute}
 	tests := []struct {
-		name string
+		name  string
 		input time.Duration
 		want  time.Duration
 	}{
@@ -2032,7 +2032,7 @@ func (webVideoTierOrder) TierOrder(account.Provider, string) []account.WebTier {
 }
 
 func (webVideoTierOrder) TierOrderForQuotaMode(_ account.Provider, _ string, quotaMode string) []account.WebTier {
-	if quotaMode == account.QuotaModeWebVideo720p {
+	if quotaMode == account.QuotaModeWebVideo {
 		return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
 	}
 	return []account.WebTier{account.WebTierSuper, account.WebTierHeavy}

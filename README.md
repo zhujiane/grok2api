@@ -293,7 +293,7 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-imagine-image`      | Image        | Basic                          | Images Generations (`enable_pro=false`) |
 | `grok-imagine-image-2.0`  | Image        | Basic                          | Images Generations (`enable_pro=true`)  |
 | `grok-imagine-image-edit` | Image Edit   | Basic                          | Images Edits                            |
-| `grok-imagine-video`      | Video        | Basic for 720p; Super for 480p | Videos                                  |
+| `grok-imagine-video`      | Video        | Basic for 480p; Super for 720p | Videos                                  |
 
 
 Web Imagine generation maps `aspect_ratio` and `n` to the browser protocol. `size` remains an OpenAI-compatible aspect-ratio alias, while generation-only `resolution` and `quality` are ignored on Web routes because the upstream product is selected by the model name rather than by those Console-oriented controls.

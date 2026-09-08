@@ -5,7 +5,7 @@ services:
     container_name: grok2api
     image: "${GROK2API_IMAGE:-ghcr.io/chenyme/grok2api:latest}"
     ports:
-      - "${GROK2API_PORT:-8000}:8000"
+      - "${GROK2API_PORT:-8002}:8000"
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
       # 非空时覆盖 config.yaml 的 PostgreSQL DSN，并自动启用 postgres。
@@ -22,34 +22,74 @@ services:
       - no-new-privileges:true
 
   # ================================ WARP ================================
-  # 如果出口 IP 不干净，可取消以下注释使用 WARP 作为落地代理。
-  # 启用后，在管理端“设置 -> 出口代理”中新增 socks5://warp:1080。
+  # 出口代理：在管理端“设置 -> 出口代理”中新增 socks5://warp:1080。
+  # 主机映射避开 1080 占用，容器内仍是 1080，Compose 网络用 socks5://warp:1080。
 
-  # warp:
-  #   container_name: warp
-  #   image: caomingjun/warp:latest
-  #   profiles: ["warp"]
-  #   restart: unless-stopped
-  #   ports:
-  #     - "127.0.0.1:1080:1080"
-  #   environment:
-  #     - WARP_SLEEP=2
-  #   cap_add:
-  #     - NET_ADMIN
+  warp:
+    container_name: warp
+    image: caomingjun/warp:latest
+    restart: unless-stopped
+    # add removed tun rule back (https://github.com/opencontainers/runc/pull/3468)
+    device_cgroup_rules:
+      - "c 10:200 rwm"
+    ports:
+      - "127.0.0.1:${WARP_PORT:-10808}:1080"
+    environment:
+      - WARP_SLEEP=2
+    cap_add:
+      - MKNOD
+      - AUDIT_WRITE
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - warp-data:/var/lib/cloudflare-warp
 
   # ================================ FLARESOLVERR ================================
   # 在管理端将 Clearance 模式设为 FlareSolverr 或按需刷新，并使用 http://flaresolverr:8191。
-  # 启动命令：docker compose --profile flaresolverr up -d
-  # Podman：podman compose --profile flaresolverr up -d
 
-  # flaresolverr:
-  #   container_name: flaresolverr
-  #   image: ghcr.io/flaresolverr/flaresolverr:latest
-  #   profiles: ["flaresolverr"]
-  #   environment:
-  #     TZ: Asia/Shanghai
-  #     LOG_LEVEL: info
-  #   restart: unless-stopped
+  flaresolverr:
+    container_name: flaresolverr
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL: info
+    restart: unless-stopped
+
+  # ================================ STATSIG SIGNER ================================
+  # 替换默认的 https://grok.wodf.de/sign。启动后在管理端设置：
+  #   Grok Web → x-statsig 获取方式 = URL
+  #   签名服务 URL = http://statsig-signer:8788/sign
+  # 然后 PUT /v1/sso 写入 Web 登录 Cookie。
+
+  statsig-signer:
+    container_name: grok2api-statsig-signer
+    build:
+      context: ./tools/statsig-signer
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${STATSIG_SIGNER_PORT:-8788}:8788"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      LISTEN: "0.0.0.0:8788"
+      GROK_BASE_URL: "${GROK_BASE_URL:-https://grok.com}"
+      PROXY_URL: "${STATSIG_PROXY_URL:-socks5://warp:1080}"
+      FLARESOLVERR_URL: "${FLARESOLVERR_URL:-http://flaresolverr:8191}"
+      STATSIG_SIGNER_TOKEN: "${STATSIG_SIGNER_TOKEN:-}"
+      DATA_DIR: /data
+      REFRESH_INTERVAL: "${STATSIG_REFRESH_INTERVAL:-10m}"
+    volumes:
+      - statsig-signer-data:/data
+    depends_on:
+      - warp
+      - flaresolverr
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+    security_opt:
+      - no-new-privileges:true
+
 
   # ================================ EGRESS QUALITY GUARD ================================
   # 可选的 Grok Build 出口质量守护 sidecar。默认不启动，也不会产生探测请求。
@@ -80,3 +120,5 @@ services:
 volumes:
   grok2api-data:
   quality_guard_state:
+  warp-data:
+  statsig-signer-data:

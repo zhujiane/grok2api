@@ -1,0 +1,17 @@
+{
+  "name": "grok2api-statsig-signer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local Playwright-backed x-statsig-id signer for grok2api Web video/chat routes",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test src/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.52.0"
+  }
+}

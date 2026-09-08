@@ -881,7 +881,7 @@ func TestWebBasicMediaCatalogRemainsAvailableAcrossStaleSnapshots(t *testing.T) 
 		"grok-imagine-image-quality": account.QuotaModeWebImagePro,
 		"grok-imagine-image-2.0":     account.QuotaModeWebImagePro,
 		"imagine-image-edit":         account.QuotaModeWebImageEdit,
-		"grok-imagine-video":         account.QuotaModeWebVideo720p,
+		"grok-imagine-video":         account.QuotaModeWebVideo,
 	}
 	for upstreamModel, quotaMode := range quotaModes {
 		route := mediaRoutes[upstreamModel]

@@ -1167,15 +1167,15 @@ func TestModelsUseLowestSufficientTierFirst(t *testing.T) {
 
 func TestWebVideoTierOrderFollowsConfirmedQuotaProduct(t *testing.T) {
 	adapter := &Adapter{}
-	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo720p); !slices.Equal(got, []account.WebTier{
+	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo); !slices.Equal(got, []account.WebTier{
 		account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy,
 	}) {
-		t.Fatalf("720p video tier order = %v", got)
+		t.Fatalf("480p video tier order = %v", got)
 	}
-	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo); !slices.Equal(got, []account.WebTier{
+	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo720p); !slices.Equal(got, []account.WebTier{
 		account.WebTierSuper, account.WebTierHeavy,
 	}) {
-		t.Fatalf("unverified video product tier order = %v", got)
+		t.Fatalf("720p video product tier order = %v", got)
 	}
 }
 
@@ -1549,7 +1549,7 @@ func TestParseVideoStreamFixture(t *testing.T) {
 }
 
 func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
-	payload := videoCreatePayload("雨后天晴！", "9:16", "480p", 6)
+	payload := videoCreatePayload("雨后天晴！", "9:16", "480p", 6, nil)
 	if len(payload) != 8 || payload["modelName"] != "imagine-video-gen" ||
 		payload["message"] != "雨后天晴！ --mode=custom" ||
 		payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true ||
@@ -1582,11 +1582,105 @@ func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
 		textToVideo["duration"] != 6 || textToVideo["resolutionName"] != "480p" {
 		t.Fatalf("textToVideo = %#v", mediaGenInput["textToVideo"])
 	}
+	if _, exists := mediaGenInput["imageToVideo"]; exists {
+		t.Fatalf("text-to-video leaked imageToVideo: %#v", mediaGenInput["imageToVideo"])
+	}
 
 	for _, field := range []string{"temporary", "videoGenModelConfig", "parentPostId"} {
 		if _, exists := payload[field]; exists {
 			t.Fatalf("legacy field %q leaked into text-to-video payload: %#v", field, payload)
 		}
+	}
+}
+
+func TestImageToVideoPayloadUsesUploadedFirstFrameAssets(t *testing.T) {
+	payload := videoCreatePayload("镜头缓缓推进", "1:1", "480p", 6, []string{"file-meta-1"})
+	mediaGenInput, ok := payload["mediaGenInput"].(map[string]any)
+	if !ok {
+		t.Fatalf("mediaGenInput = %#v", payload["mediaGenInput"])
+	}
+	if _, exists := mediaGenInput["textToVideo"]; exists {
+		t.Fatalf("image-to-video leaked textToVideo: %#v", mediaGenInput["textToVideo"])
+	}
+	imageToVideo, ok := mediaGenInput["imageToVideo"].(map[string]any)
+	if !ok || imageToVideo["prompt"] != "镜头缓缓推进" || imageToVideo["aspectRatio"] != "1:1" ||
+		imageToVideo["duration"] != 6 || imageToVideo["resolutionName"] != "480p" {
+		t.Fatalf("imageToVideo = %#v", mediaGenInput["imageToVideo"])
+	}
+	assets, ok := imageToVideo["inputAssets"].([]string)
+	if !ok || !slices.Equal(assets, []string{"file-meta-1"}) {
+		t.Fatalf("inputAssets = %#v", imageToVideo["inputAssets"])
+	}
+}
+
+func TestGenerateVideoUploadsFirstFrameIntoImageToVideo(t *testing.T) {
+	const firstFramePNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+	uploadCalls := 0
+	var gotPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/http/upload-file-v2/direct":
+			uploadCalls++
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"uploadId":"upload-1","fileMetadata":{"fileMetadataId":"file-meta-1","fileUri":"users/test/first-frame/content"}}`)
+		case "/rest/app-chat/conversations/new":
+			if err := json.NewDecoder(request.Body).Decode(&gotPayload); err != nil {
+				t.Errorf("decode video payload: %v", err)
+			}
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(writer, `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1","videoUrl":"/videos/final.mp4"}}}}`+"\n\n")
+		case "/rest/media/post/create":
+			t.Error("first-frame video unexpectedly used the retired media-post endpoint")
+			writer.WriteHeader(http.StatusInternalServerError)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test", VideoTimeoutSeconds: 5,
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+		Prompt:     "镜头缓缓推进", Duration: 6, Resolution: "480p", ImageURL: firstFramePNG,
+	})
+	if err != nil || result.URL != "https://assets.grok.com/videos/final.mp4" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if uploadCalls != 1 {
+		t.Fatalf("upload calls=%d, want 1", uploadCalls)
+	}
+	mediaGenInput, _ := gotPayload["mediaGenInput"].(map[string]any)
+	imageToVideo, _ := mediaGenInput["imageToVideo"].(map[string]any)
+	assets, _ := imageToVideo["inputAssets"].([]any)
+	if imageToVideo["prompt"] != "镜头缓缓推进" || imageToVideo["resolutionName"] != "480p" ||
+		len(assets) != 1 || assets[0] != "file-meta-1" {
+		t.Fatalf("imageToVideo payload = %#v", gotPayload)
+	}
+	if _, exists := mediaGenInput["textToVideo"]; exists {
+		t.Fatalf("first-frame request leaked textToVideo: %#v", mediaGenInput)
+	}
+
+	_, err = adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential:    account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+		Prompt:        "test",
+		Duration:      6,
+		ReferenceURLs: []string{firstFramePNG},
+	})
+	if err == nil {
+		t.Fatal("Web reference-to-video was accepted")
+	}
+	if stage, ok := provider.VideoErrorStage(err); !ok || stage != provider.VideoStagePrepare {
+		t.Fatalf("reference rejection stage = %q, ok=%t, err=%v", stage, ok, err)
 	}
 }
 
