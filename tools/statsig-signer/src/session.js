@@ -14,12 +14,20 @@ export function createSession(config, store) {
   let refreshQueue = Promise.resolve();
   let closed = false;
 
+  let lastClearance = { cookies: {}, userAgent: "" };
+  let lastClearanceAt = 0;
+  const CLEARANCE_MAX_AGE_MS = 25 * 60 * 1000;
+  const accountHexCache = new Map();
+  const inFlightSsoPromises = new Map();
+  const ACCOUNT_HEX_TTL_MS = 30 * 60 * 1000;
+
   async function status() {
     const sso = await store.load();
     return {
       browserReady,
       hexReady: Boolean(hex),
       hexPreview: hex ? `${hex.slice(0, 12)}…(${hex.length})` : "",
+      cachedAccountsCount: accountHexCache.size,
       sso: publicFields(sso),
       lastRefreshAt,
       lastError,
@@ -30,6 +38,130 @@ export function createSession(config, store) {
 
   function currentHex() {
     return hex;
+  }
+
+  async function getHexForSso(ssoString) {
+    if (!ssoString) {
+      return { hex, metaContent: "" };
+    }
+    const now = Date.now();
+    const cached = accountHexCache.get(ssoString);
+    if (cached && cached.expiresAt > now && cached.hex) {
+      return cached;
+    }
+    if (inFlightSsoPromises.has(ssoString)) {
+      return inFlightSsoPromises.get(ssoString);
+    }
+    const promise = (async () => {
+      try {
+        const ssoResult = await fetchHexForSso(ssoString);
+        if (ssoResult && ssoResult.hex) {
+          const entry = {
+            hex: ssoResult.hex,
+            metaContent: ssoResult.metaContent || "",
+            expiresAt: Date.now() + ACCOUNT_HEX_TTL_MS,
+          };
+          accountHexCache.set(ssoString, entry);
+          return entry;
+        }
+      } catch (err) {
+        log.warn("fetch_sso_hex_failed", { error: err.message });
+      } finally {
+        inFlightSsoPromises.delete(ssoString);
+      }
+      return { hex, metaContent: "" };
+    })();
+    inFlightSsoPromises.set(ssoString, promise);
+    return promise;
+  }
+
+  async function fetchHexForSso(ssoString) {
+    if (!browser) {
+      browser = await chromium.launch({
+        headless: config.headless,
+        args: [
+          "--disable-blink-features=AutomationControlled",
+          "--no-sandbox",
+          "--disable-dev-shm-usage",
+        ],
+      });
+    }
+
+    let clearance = lastClearance;
+    const clearanceAge = Date.now() - lastClearanceAt;
+    if (!clearance || !clearance.cookies || Object.keys(clearance.cookies).length === 0 || clearanceAge > CLEARANCE_MAX_AGE_MS) {
+      try {
+        clearance = await solveClearance({
+          flareSolverrURL: config.flareSolverrURL,
+          targetURL: config.grokBaseURL,
+          proxyURL: config.proxyURL,
+          timeoutMs: Math.max(config.navigationTimeoutMs, 60_000),
+        });
+        lastClearance = clearance;
+        lastClearanceAt = Date.now();
+      } catch (err) {
+        log.warn("flaresolverr_unavailable_for_sso", { error: err.message });
+      }
+    }
+
+    const userAgent = clearance?.userAgent || undefined;
+    const userContext = await browser.newContext({
+      proxy: config.proxyURL ? { server: config.proxyURL } : undefined,
+      userAgent,
+      locale: "en-US",
+      viewport: { width: 1280, height: 800 },
+    });
+
+    try {
+      await userContext.addInitScript(initScripts);
+      const cookies = buildCookies(config.grokBaseURL, { sso: ssoString, ssoRw: ssoString }, clearance?.cookies);
+      await userContext.addCookies(cookies);
+
+      const userPage = await userContext.newPage();
+      userPage.setDefaultTimeout(config.navigationTimeoutMs);
+      await userPage.goto(`${config.grokBaseURL}/imagine`, { waitUntil: "domcontentloaded" });
+
+      let captured = await waitForHex(userPage, 35000);
+      if (!captured) {
+        await userPage.evaluate(async () => {
+          try {
+            await fetch("/rest/rate-limits", {
+              method: "POST",
+              credentials: "include",
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            });
+          } catch {}
+        });
+        captured = await waitForHex(userPage, 10000);
+      }
+
+      let metaContent = "";
+      try {
+        metaContent = await userPage.evaluate(() => {
+          const el = document.querySelector('meta[name*="site"][name*="verification"]');
+          return el ? el.content : "";
+        });
+      } catch {}
+
+      if (captured) {
+        log.info("sso_hex_captured", {
+          hexLength: captured.length,
+          hasMeta: Boolean(metaContent),
+          metaLength: metaContent.length,
+          ssoPrefix: ssoString.slice(0, 15),
+        });
+      }
+      return { hex: captured, metaContent };
+    } finally {
+      await userContext.close().catch(() => {});
+    }
+  }
+
+  function invalidateSso(ssoString) {
+    if (ssoString) {
+      accountHexCache.delete(ssoString);
+    }
   }
 
   function enqueueRefresh(reason) {
@@ -69,6 +201,8 @@ export function createSession(config, store) {
         proxyURL: config.proxyURL,
         timeoutMs: Math.max(config.navigationTimeoutMs, 60_000),
       });
+      lastClearance = clearance;
+      lastClearanceAt = Date.now();
     } catch (error) {
       log.warn("flaresolverr_unavailable", { error: error.message });
     }
@@ -128,6 +262,8 @@ export function createSession(config, store) {
   async function close() {
     closed = true;
     browserReady = false;
+    accountHexCache.clear();
+    inFlightSsoPromises.clear();
     if (context) {
       await context.close().catch(() => {});
     }
@@ -136,7 +272,7 @@ export function createSession(config, store) {
     }
   }
 
-  return { status, currentHex, enqueueRefresh, close };
+  return { status, currentHex, getHexForSso, invalidateSso, enqueueRefresh, close };
 }
 
 function publicFields(sso) {

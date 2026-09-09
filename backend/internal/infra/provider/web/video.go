@@ -251,6 +251,7 @@ func boundWebMediaDiagnostic(value string, limit int) string {
 }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	ctx = withVideoCall(ctx)
 	if len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Grok Web 当前仅支持文本生视频与首帧图生视频；参考图视频请使用 Build 或 Console Provider"))
 	}

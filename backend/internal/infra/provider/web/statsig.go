@@ -2,8 +2,11 @@ package web
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +24,22 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/sync/singleflight"
 )
+
+type statsigCallTypeContextKey struct{}
+
+var videoCallContextKey = statsigCallTypeContextKey{}
+
+func withVideoCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, videoCallContextKey, true)
+}
+
+func isVideoCall(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(videoCallContextKey).(bool)
+	return v
+}
 
 const (
 	defaultStatsigSignerURL = "https://grok.wodf.de/sign"
@@ -60,7 +79,7 @@ type statsigSigner struct {
 func newStatsigSigner() *statsigSigner {
 	return &statsigSigner{
 		client: &http.Client{
-			Timeout:       12 * time.Second,
+			Timeout:       60 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		fetchMeta:        fetchStatsigMetaContent,
@@ -71,7 +90,8 @@ func newStatsigSigner() *statsigSigner {
 }
 
 func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, target string) (string, string, error) {
-	key, path, err := statsigSignatureKey(baseURL, signerURL, method, target)
+	isVideo := isVideoCall(ctx)
+	key, path, err := statsigSignatureKeyWithToken(baseURL, signerURL, method, target, token, isVideo)
 	if err != nil {
 		return "", "", err
 	}
@@ -83,14 +103,22 @@ func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token stri
 		if cached, ok := s.cached(key, now); ok {
 			return statsigSignResult{value: cached, source: "cache"}, nil
 		}
-		fresh, refreshErr := s.freshSignature(ctx, baseURL, signerURL, token, lease, method, path)
+		ssoToken := ""
+		if isVideo {
+			ssoToken = token
+		}
+		fresh, refreshErr := s.freshSignature(ctx, baseURL, signerURL, token, lease, method, path, ssoToken)
 		if refreshErr != nil {
 			if stale, ok := s.stale(key); ok {
 				return statsigSignResult{value: stale, source: "stale"}, nil
 			}
 			return statsigSignResult{}, refreshErr
 		}
-		s.store(key, fresh, now.Add(statsigCacheTTL), now)
+		ttl := statsigCacheTTL
+		if isVideo {
+			ttl = 30 * time.Second
+		}
+		s.store(key, fresh, now.Add(ttl), now)
 		return statsigSignResult{value: fresh, source: "refresh"}, nil
 	})
 	if err != nil {
@@ -138,12 +166,12 @@ func (s *statsigSigner) Warm(ctx context.Context, baseURL, signerURL, token stri
 	return warmed, nil
 }
 
-func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, path string) (string, error) {
+func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, token string, lease *infraegress.Lease, method, path string, ssoToken ...string) (string, error) {
 	meta, err := s.fetchMeta(ctx, baseURL, token, lease)
 	if err != nil {
 		return "", err
 	}
-	signature, err := s.requestSignature(ctx, signerURL, method, path, meta)
+	signature, err := s.requestSignature(ctx, signerURL, method, path, meta, ssoToken...)
 	if err == nil {
 		return signature, nil
 	}
@@ -152,7 +180,7 @@ func (s *statsigSigner) freshSignature(ctx context.Context, baseURL, signerURL, 
 	if refreshErr != nil {
 		return "", fmt.Errorf("刷新 Statsig metaContent: %w", refreshErr)
 	}
-	signature, retryErr := s.requestSignature(ctx, signerURL, method, path, meta)
+	signature, retryErr := s.requestSignature(ctx, signerURL, method, path, meta, ssoToken...)
 	if retryErr != nil {
 		return "", fmt.Errorf("Statsig 签名失败: %w", retryErr)
 	}
@@ -165,8 +193,14 @@ func (s *statsigSigner) Invalidate(baseURL, signerURL, method, target string) {
 		return
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	delete(s.entries, key)
-	s.mu.Unlock()
+	prefix := key + "\x00"
+	for k := range s.entries {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.entries, k)
+		}
+	}
 }
 
 func (s *statsigSigner) Clear() {
@@ -214,6 +248,10 @@ func (s *statsigSigner) store(key, value string, expiresAt, now time.Time) {
 }
 
 func statsigSignatureKey(baseURL, signerURL, method, target string) (string, string, error) {
+	return statsigSignatureKeyWithToken(baseURL, signerURL, method, target, "", false)
+}
+
+func statsigSignatureKeyWithToken(baseURL, signerURL, method, target, token string, isVideo bool) (string, string, error) {
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return "", "", fmt.Errorf("解析 Statsig 目标地址: %w", err)
@@ -223,20 +261,29 @@ func statsigSignatureKey(baseURL, signerURL, method, target string) (string, str
 		path = "/"
 	}
 	method = strings.ToUpper(strings.TrimSpace(method))
-	return strings.TrimRight(baseURL, "/") + "\x00" + strings.TrimSpace(signerURL) + "\x00" + method + "\x00" + path, path, nil
+	key := strings.TrimRight(baseURL, "/") + "\x00" + strings.TrimSpace(signerURL) + "\x00" + method + "\x00" + path
+	if isVideo && token != "" {
+		sum := sha256.Sum256([]byte(token))
+		key += "\x00video:" + hex.EncodeToString(sum[:8])
+	}
+	return key, path, nil
 }
 
-func (s *statsigSigner) requestSignature(ctx context.Context, endpoint, method, path, metaContent string) (string, error) {
+func (s *statsigSigner) requestSignature(ctx context.Context, endpoint, method, path, metaContent string, ssoToken ...string) (string, error) {
 	if err := s.validateEndpoint(ctx, endpoint); err != nil {
 		return "", err
 	}
-	payload, _ := json.Marshal(map[string]any{
+	payloadMap := map[string]any{
 		"method": strings.ToUpper(strings.TrimSpace(method)),
 		"path":   path,
 		"environment": map[string]string{
 			"metaContent": metaContent,
 		},
-	})
+	}
+	if len(ssoToken) > 0 && strings.TrimSpace(ssoToken[0]) != "" {
+		payloadMap["sso"] = strings.TrimSpace(ssoToken[0])
+	}
+	payload, _ := json.Marshal(payloadMap)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return "", err
@@ -282,6 +329,20 @@ func fetchStatsigMetaContentWithDo(ctx context.Context, baseURL, token string, l
 	if do == nil {
 		return "", fmt.Errorf("Statsig 获取缺少出口租约")
 	}
+	if isVideoCall(ctx) {
+		imagine, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/imagine", do)
+		if err == nil && imagine.statusCode >= 200 && imagine.statusCode < 300 {
+			if content, extractErr := extractStatsigMetaContent(imagine.body); extractErr == nil {
+				return content, nil
+			}
+		}
+		root, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/", do)
+		if err == nil && root.statusCode >= 200 && root.statusCode < 300 {
+			if content, extractErr := extractStatsigMetaContent(root.body); extractErr == nil {
+				return content, nil
+			}
+		}
+	}
 	index, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/index", do)
 	if err != nil {
 		return "", err
@@ -325,7 +386,7 @@ func fetchStatsigMetaResponse(ctx context.Context, baseURL, token string, lease 
 		return statsigMetaResponse{}, err
 	}
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	request.Header.Set("Accept-Encoding", "gzip")
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	request.Header.Set("Cache-Control", "no-cache")
 	request.Header.Set("Pragma", "no-cache")
@@ -342,7 +403,16 @@ func fetchStatsigMetaResponse(ctx context.Context, baseURL, token string, lease 
 		return statsigMetaResponse{}, err
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, statsigMetaBodyLimit+1))
+	var reader io.Reader = response.Body
+	if strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
+		gz, gzErr := gzip.NewReader(response.Body)
+		if gzErr != nil {
+			return statsigMetaResponse{}, fmt.Errorf("解压 Grok %s gzip 响应失败: %w", path, gzErr)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, statsigMetaBodyLimit+1))
 	if err != nil {
 		return statsigMetaResponse{}, err
 	}

@@ -34,6 +34,10 @@ export function createServer(config, store, session) {
       await sign(request, response);
       return;
     }
+    if (request.method === "POST" && path === "/v1/invalidate") {
+      await invalidate(request, response);
+      return;
+    }
     if (path === "/v1/sso") {
       if (!authorize(request, response)) {
         return;
@@ -68,14 +72,37 @@ export function createServer(config, store, session) {
     const body = await readJSON(request);
     const method = String(body?.method || "").trim();
     const path = String(body?.path || "").trim();
-    const metaContent = String(body?.environment?.metaContent || body?.metaContent || "").trim();
-    if (!method || !path || !metaContent) {
-      send(response, 400, { error: { message: "method、path、environment.metaContent 均为必填" } });
+    let metaContent = String(body?.environment?.metaContent || body?.metaContent || "").trim();
+    const sso = String(body?.sso || body?.token || "").trim();
+    if (!method || !path || (!metaContent && !sso)) {
+      send(response, 400, { error: { message: "method、path 均为必填" } });
       return;
     }
-    const hex = session.currentHex();
+    let hex = "";
+    if (sso) {
+      try {
+        const ssoResult = await session.getHexForSso(sso);
+        if (ssoResult && typeof ssoResult === "object") {
+          hex = ssoResult.hex || "";
+          if (ssoResult.metaContent) {
+            metaContent = ssoResult.metaContent;
+          }
+        } else if (typeof ssoResult === "string") {
+          hex = ssoResult;
+        }
+      } catch (error) {
+        log.warn("sso_hex_fallback", { error: error.message });
+      }
+    }
+    if (!hex) {
+      hex = session.currentHex();
+    }
     if (!hex) {
       send(response, 503, { error: { message: "Statsig HEX 尚未就绪，请先配置 SSO 或等待刷新" } });
+      return;
+    }
+    if (!metaContent) {
+      send(response, 400, { error: { message: "未能获取有效的 metaContent" } });
       return;
     }
     try {
@@ -84,9 +111,27 @@ export function createServer(config, store, session) {
         send(response, 502, { error: { message: "签名结果无效" } });
         return;
       }
+      log.info("statsig_signed", {
+        method,
+        path,
+        ssoUsed: Boolean(sso),
+        hexLength: hex.length,
+        metaLength: metaContent.length,
+      });
       send(response, 200, { "x-statsig-id": statsigID });
     } catch (error) {
       send(response, 400, { error: { message: error.message } });
+    }
+  }
+
+  async function invalidate(request, response) {
+    const body = await readJSON(request);
+    const sso = String(body?.sso || body?.token || "").trim();
+    if (sso) {
+      session.invalidateSso(sso);
+      send(response, 200, { invalidated: true });
+    } else {
+      send(response, 400, { error: { message: "缺少 sso 参数" } });
     }
   }
 

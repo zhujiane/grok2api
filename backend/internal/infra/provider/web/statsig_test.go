@@ -437,3 +437,97 @@ func TestStatsigInvalidationOnlyAppliesToURLMode(t *testing.T) {
 		t.Fatal("URL Statsig must be invalidated after anti-bot rejection")
 	}
 }
+
+func TestVideoCallSignerUsesPerAccountSignatureAndShortTTL(t *testing.T) {
+	var ssoTokens []string
+	signer := newStatsigSigner()
+	now := time.Unix(1770000000, 0).UTC()
+	signer.now = func() time.Time { return now }
+	signer.validateEndpoint = func(context.Context, string) error { return nil }
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "meta-value", nil
+	}
+	signer.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			SSO string `json:"sso"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&payload)
+		ssoTokens = append(ssoTokens, payload.SSO)
+		raw := make([]byte, 70)
+		copy(raw, []byte(payload.SSO))
+		raw[69] = byte(len(ssoTokens))
+		sig := base64.RawStdEncoding.EncodeToString(raw)
+		body := fmt.Sprintf(`{"x-statsig-id":%q}`, sig)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})}
+
+	videoCtx := withVideoCall(context.Background())
+
+	// Call 1 with token-a in video context
+	valA, srcA, err := signer.Sign(videoCtx, "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srcA != "refresh" || len(ssoTokens) != 1 || ssoTokens[0] != "token-a" {
+		t.Fatalf("unexpected valA: %v, src: %v, ssoTokens: %v", valA, srcA, ssoTokens)
+	}
+
+	// Call 2 with token-b: should NOT hit cache because token is different in video context!
+	valB, srcB, err := signer.Sign(videoCtx, "https://grok.com", "https://signer.example/sign", "token-b", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srcB != "refresh" || len(ssoTokens) != 2 || ssoTokens[1] != "token-b" || valA == valB {
+		t.Fatalf("unexpected valB: %v, src: %v, ssoTokens: %v", valB, srcB, ssoTokens)
+	}
+
+	// Call 3 with token-a within 30s: should hit cache
+	now = now.Add(15 * time.Second)
+	valA2, srcA2, err := signer.Sign(videoCtx, "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srcA2 != "cache" || valA2 != valA || len(ssoTokens) != 2 {
+		t.Fatalf("expected cache hit for token-a, got src=%v, tokens=%v", srcA2, ssoTokens)
+	}
+
+	// Call 4 with token-a after 31s: short TTL expired, should refresh
+	now = now.Add(20 * time.Second) // total +35s
+	valA3, srcA3, err := signer.Sign(videoCtx, "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srcA3 != "refresh" || len(ssoTokens) != 3 || valA3 == "" {
+		t.Fatalf("expected refresh after 30s TTL, got src=%v, tokens=%v", srcA3, ssoTokens)
+	}
+
+	// Non-video call with token-a: does NOT send sso token, uses shared cache!
+	valShared1, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ssoTokens[3] != "" {
+		t.Fatalf("expected empty sso in non-video call, got %q", ssoTokens[3])
+	}
+	valShared2, srcShared2, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "token-b", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srcShared2 != "cache" || valShared1 != valShared2 {
+		t.Fatalf("expected shared cache hit for non-video call, got src=%v", srcShared2)
+	}
+
+	// Invalidation clears both shared and video entries
+	signer.Invalidate("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test")
+	_, srcVideoAfterInv, err := signer.Sign(videoCtx, "https://grok.com", "https://signer.example/sign", "token-a", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srcVideoAfterInv != "refresh" {
+		t.Fatalf("expected refresh after invalidation, got %v", srcVideoAfterInv)
+	}
+}
