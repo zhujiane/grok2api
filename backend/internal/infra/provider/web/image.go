@@ -1290,7 +1290,69 @@ func (a *Adapter) uploadFileV2Direct(ctx context.Context, cfg Config, lease *egr
 	if err != nil {
 		return uploadedFile{}, err
 	}
+	if uploaded.MetadataID == "" && uploaded.UploadID != "" {
+		return a.waitDirectFileUpload(requestCtx, cfg, lease, token, uploaded.UploadID, referer)
+	}
 	return uploaded, nil
+}
+
+// A successful direct upload may only acknowledge a processing job. Wait for
+// its final metadata before referencing it in a conversation or image request.
+func (a *Adapter) waitDirectFileUpload(ctx context.Context, cfg Config, lease *egress.Lease, token, uploadID, referer string) (uploadedFile, error) {
+	delay := 150 * time.Millisecond
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/rest/app-chat/upload-file-v2/status?uploadId="+url.QueryEscape(uploadID), nil)
+		if err != nil {
+			return uploadedFile{}, err
+		}
+		request.Header = buildHeaders(token, lease, "")
+		applyAppHeaders(request.Header, cfg.BaseURL, referer)
+		response, err := lease.DoDeferredForbidden(request)
+		if err != nil {
+			return uploadedFile{}, fmt.Errorf("查询上传文件处理状态: %w", err)
+		}
+		var status struct {
+			Status       string `json:"status"`
+			FileMetadata struct {
+				ID  string `json:"fileMetadataId"`
+				URI string `json:"fileUri"`
+			} `json:"fileMetadata"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(response.Body, directFileUploadResponseLimit)).Decode(&status)
+		_ = response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			if response.StatusCode == http.StatusForbidden {
+				lease.InvalidateClearance()
+			}
+			return uploadedFile{}, fmt.Errorf("查询上传文件处理状态返回 %d", response.StatusCode)
+		}
+		if decodeErr != nil {
+			return uploadedFile{}, fmt.Errorf("上传文件处理状态无效: %w", decodeErr)
+		}
+		switch status.Status {
+		case "SUCCESS":
+			if id := strings.TrimSpace(status.FileMetadata.ID); id != "" {
+				uri := ""
+				if status.FileMetadata.URI != "" {
+					uri = absoluteAssetURL(status.FileMetadata.URI)
+				}
+				return uploadedFile{ID: id, MetadataID: id, URI: uri}, nil
+			}
+		case "ERROR", "ABORTED", "EXPIRED":
+			return uploadedFile{}, fmt.Errorf("上传文件处理失败: %s", status.Status)
+		case "INITIALIZED", "UPLOADING", "UPLOADED", "PROCESSING", "RETRYING", "UNSET":
+		default:
+			return uploadedFile{}, errors.New("上传文件返回未知处理状态")
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return uploadedFile{}, fmt.Errorf("等待上传文件处理完成: %w", ctx.Err())
+		case <-timer.C:
+		}
+		delay = min(delay*2, 3*time.Second)
+	}
 }
 
 func buildDirectFileUploadBody(file provider.ImageInput, fileSource string) ([]byte, string, error) {
@@ -1355,20 +1417,15 @@ func decodeDirectFileUploadResponse(source io.Reader) (uploadedFile, error) {
 	if fileID == "" {
 		fileID = strings.TrimSpace(value.FileMetadata.FileID)
 	}
-	if fileID == "" {
-		// Some successful uploads complete asynchronously and only expose the
-		// upload task ID. Gateway accepts it as the file reference; prefer the
-		// browser's fileMetadataId whenever it is already available.
-		fileID = strings.TrimSpace(value.UploadID)
-	}
+
 	fileURI := ""
 	if value.FileMetadata.FileURI != "" {
 		fileURI = absoluteAssetURL(value.FileMetadata.FileURI)
 	}
-	if fileID == "" && fileURI == "" {
+	if fileID == "" && fileURI == "" && strings.TrimSpace(value.UploadID) == "" {
 		return uploadedFile{}, fmt.Errorf("V2 上传文件成功但上游未返回完整文件标识")
 	}
-	return uploadedFile{ID: fileID, MetadataID: metadataID, URI: fileURI}, nil
+	return uploadedFile{ID: fileID, UploadID: strings.TrimSpace(value.UploadID), MetadataID: metadataID, URI: fileURI}, nil
 }
 
 func directFileUploadTerminalError(raw json.RawMessage) bool {

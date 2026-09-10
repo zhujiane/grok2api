@@ -167,12 +167,14 @@ func TestGenerateLiteImageReacquiresAfterChallengeHandshake(t *testing.T) {
 		_ = connection.WriteJSON(map[string]any{
 			"session_id": "session-1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "session-1"}},
 		})
-		for range 2 {
-			var message map[string]any
-			if err := connection.ReadJSON(&message); err != nil {
-				t.Errorf("read Gateway turn: %v", err)
-				return
-			}
+		var message map[string]any
+		if err := connection.ReadJSON(&message); err != nil {
+			t.Errorf("read Gateway turn: %v", err)
+			return
+		}
+		if message["event"].(map[string]any)["type"] != "response.create" {
+			t.Errorf("unexpected Gateway turn: %#v", message)
+			return
 		}
 		_ = connection.WriteJSON(map[string]any{
 			"session_id": "session-1",

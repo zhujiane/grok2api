@@ -1,5 +1,7 @@
 # Grok2API Web 渠道接口全面测试报告
 
+> 2026-09-10 更正：原图片引用测试仅检查 HTTP 200，未验证实际识图，存在误判。已修复 Gateway 附件引用结构，并完成颜色、形状和产品标签语义验证，详见 [图片引用修复报告](IMAGE_REFERENCE_FIX_REPORT.md)。视频和文件的原有 200 结果也仅代表协议请求成功，不代表内容理解已验证。
+
 - **测试目标地址**: `http://172.26.115.39:8002/`
 - **测试 Client Key**: `g2a_ad4528267acc_vAoFafhWawsrmbBvHCIpO87sDuvmshCQ`
 - **测试环境**: Linux x86_64, Docker 单实例 (SQLite + Local Media Store)
@@ -51,7 +53,7 @@
 - **执行流程**:
   1. Grok2API 解析 Base64 数据并验证 MIME 类型（jpeg/png/webp 等）；
   2. 调用上游 `/http/upload-file-v2/direct` 接口将图片上传至 Grok 上游存储；
-  3. 获取 `fileMetadataId`，在 WebSocket Gateway 消息中使用 `file_mention` 和 `file_attachment_ids` 挂载附件；
+  3. 获取 `fileMetadataId`，在 WebSocket Gateway 的 `response.create` 事件中使用 `mention.file_mention` 和 `file_attachment_ids` 挂载附件（不得多包一层 `target`）；
   4. 正常返回 HTTP 200 OK。
 - **注意点**: 过于微小且无内容的特殊图片（如 1x1 占位 png）会被 Grok 上游直传接口判定为无效文件拒绝；常规真实尺寸图片（如 200x200 以上）均可秒级上传并关联。
 

@@ -47,10 +47,13 @@ func TestGatewaySessionSupportsNewAndExistingConversations(t *testing.T) {
 	}
 }
 
-func TestGatewayTurnEventsOmitCastleAndPreserveAttachments(t *testing.T) {
+func TestGatewayTurnEventOmitCastleAndPreserveAttachments(t *testing.T) {
 	previous := &inferencedomain.WebResponseState{UpstreamParentResponseID: "response-1"}
-	item, response := gatewayTurnEvents("conversation-1", "hello", []string{"file-1"}, previous)
+	item := gatewayTurnEvent("conversation-1", "hello", []string{"file-1"}, previous)
 	itemEvent := item["event"].(map[string]any)
+	if itemEvent["type"] != "response.create" {
+		t.Fatalf("generation event = %#v", itemEvent)
+	}
 	if item["session_id"] != "conversation-1" || itemEvent["parent_response_id"] != "response-1" {
 		t.Fatalf("item event = %#v", item)
 	}
@@ -59,12 +62,12 @@ func TestGatewayTurnEventsOmitCastleAndPreserveAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(encoded)
-	for _, expected := range []string{`"file_attachment_ids":["file-1"]`, `"file_mention":{"file_id":"file-1"}`, `"text":{"text":"hello"}`} {
+	for _, expected := range []string{`"file_attachment_ids":["file-1"]`, `"mention":{"file_mention":{"file_id":"file-1"}}`, `"text":{"text":"hello"}`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("item JSON %s missing %s", text, expected)
 		}
 	}
-	responseJSON, _ := json.Marshal(response)
+	responseJSON, _ := json.Marshal(item)
 	if strings.Contains(string(responseJSON), "castle_request_token") {
 		t.Fatalf("response.create unexpectedly contains Castle token: %s", responseJSON)
 	}

@@ -23,3 +23,7 @@
      ```bash
      python3 /root/work/grok2api/test/test_suite.py
      ```
+
+5. **[IMAGE_REFERENCE_FIX_REPORT.md](IMAGE_REFERENCE_FIX_REPORT.md)**
+   - 2026-09-10 Chat 图片引用故障根因、修复和实际识图回归结果。
+   - 独立复测脚本：[image_reference_regression.py](image_reference_regression.py)，通过环境变量传入 Client Key。

@@ -448,18 +448,17 @@ func TestChatImageUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "conv_1"}}})
 			var item map[string]any
 			if err := connection.ReadJSON(&item); err != nil {
-				t.Errorf("read conversation.item.create: %v", err)
+				t.Errorf("read response.create: %v", err)
 				return
 			}
 			itemEvent := item["event"].(map[string]any)
+			if itemEvent["type"] != "response.create" {
+				t.Errorf("generation event = %#v", itemEvent)
+				return
+			}
 			attachments, _ := itemEvent["file_attachment_ids"].([]any)
 			if len(attachments) != 1 || attachments[0] != "file_meta_1" {
 				t.Errorf("file_attachment_ids = %#v", itemEvent["file_attachment_ids"])
-			}
-			var create map[string]any
-			if err := connection.ReadJSON(&create); err != nil || create["event"].(map[string]any)["type"] != "response.create" {
-				t.Errorf("read response.create: value=%#v err=%v", create, err)
-				return
 			}
 			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.chunk", "chunk": map[string]any{"text": map[string]any{"text": "seen", "channel": "CHANNEL_ASSISTANT_RESPONSE"}}}})
 			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.done", "response": map[string]any{"id": "parent_1", "status": "completed"}}})
@@ -545,18 +544,17 @@ func TestChatVideoUploadFeedsFileMetadataIntoConversation(t *testing.T) {
 			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "conv_1"}}})
 			var item map[string]any
 			if err := connection.ReadJSON(&item); err != nil {
-				t.Errorf("read conversation.item.create: %v", err)
+				t.Errorf("read response.create: %v", err)
 				return
 			}
 			itemEvent := item["event"].(map[string]any)
+			if itemEvent["type"] != "response.create" {
+				t.Errorf("generation event = %#v", itemEvent)
+				return
+			}
 			attachments, _ := itemEvent["file_attachment_ids"].([]any)
 			if len(attachments) != 1 || attachments[0] != "file_meta_video" {
 				t.Errorf("file_attachment_ids = %#v", itemEvent["file_attachment_ids"])
-			}
-			var create map[string]any
-			if err := connection.ReadJSON(&create); err != nil || create["event"].(map[string]any)["type"] != "response.create" {
-				t.Errorf("read response.create: value=%#v err=%v", create, err)
-				return
 			}
 			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.chunk", "chunk": map[string]any{"text": map[string]any{"text": "watched", "channel": "CHANNEL_ASSISTANT_RESPONSE"}}}})
 			_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.done", "response": map[string]any{"id": "parent_1", "status": "completed"}}})
@@ -628,17 +626,12 @@ func TestForwardMessagesWebSearchEndToEnd(t *testing.T) {
 				_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "conv_1"}}})
 				var item map[string]any
 				if err := connection.ReadJSON(&item); err != nil {
-					t.Errorf("read conversation.item.create: %v", err)
+					t.Errorf("read response.create: %v", err)
 					return
 				}
 				itemValue := item["event"].(map[string]any)["item"].(map[string]any)
 				chunks := itemValue["x_grok"].(map[string]any)["input_chunks"].([]any)
 				upstreamMessage, _ = chunks[len(chunks)-1].(map[string]any)["text"].(map[string]any)["text"].(string)
-				var create map[string]any
-				if err := connection.ReadJSON(&create); err != nil {
-					t.Errorf("read response.create: %v", err)
-					return
-				}
 				_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.search.result", "result": map[string]any{"url": "https://doc.rust-lang.org", "title": "The Rust Book"}}})
 				_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.chunk", "chunk": map[string]any{"text": map[string]any{"text": "Here you go.", "channel": "CHANNEL_ASSISTANT_RESPONSE"}}}})
 				_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.done", "response": map[string]any{"id": "parent_1", "status": "completed"}}})
@@ -1234,7 +1227,7 @@ func TestDecodeDirectFileUploadResponse(t *testing.T) {
 		t.Fatalf("uploaded=%#v err=%v", uploaded, err)
 	}
 	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{}}`))
-	if err != nil || uploaded.ID != "upload-1" || uploaded.MetadataID != "" || uploaded.URI != "" {
+	if err != nil || uploaded.ID != "" || uploaded.UploadID != "upload-1" || uploaded.MetadataID != "" || uploaded.URI != "" {
 		t.Fatalf("uploadId-only response: uploaded=%#v err=%v", uploaded, err)
 	}
 	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"fileMetadata":{"fileId":"file-1"}}`))

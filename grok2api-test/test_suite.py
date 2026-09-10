@@ -83,7 +83,13 @@ def run_tests():
         "stream": False
     }
     r = requests.post(f"{BASE_URL}/v1/chat/completions", headers=HEADERS, json=payload, timeout=60)
-    print(f"Status: {r.status_code}, Response: {r.json()['choices'][0]['message']['content'][:100]}...")
+    r.raise_for_status()
+    image_answer = r.json()['choices'][0]['message']['content']
+    print(f"Status: {r.status_code}, Response: {image_answer}")
+    assert "red" in image_answer.lower() and any(
+        shape in image_answer.lower() for shape in ("circle", "circular", "disk", "disc")
+    ), f"Image was not understood: {image_answer}"
+
 
     # 5. Chat with Video
     print("\n5. Testing POST /v1/chat/completions (Video Reference Base64)...")
