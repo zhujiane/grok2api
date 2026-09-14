@@ -76,6 +76,9 @@ function normalizeHex(value) {
 }
 
 function decodeBase64(value) {
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/u.test(value) || value.replace(/=+$/u, "").length % 4 === 1) {
+    throw new Error("metaContent 不是有效 Base64");
+  }
   const normalized = value.replace(/-/gu, "+").replace(/_/gu, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   const decoded = Buffer.from(padded, "base64");

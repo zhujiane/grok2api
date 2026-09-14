@@ -10,7 +10,7 @@ const session = createSession(config, store);
 const server = createServer(config, store, session);
 
 server.listen(config.port, config.host, () => {
-  log.info("statsig_signer_listen", { host: config.host, port: config.port, proxyURL: config.proxyURL });
+  log.info("statsig_signer_listen", { host: config.host, port: config.port });
   session.enqueueRefresh("startup");
   setInterval(() => session.enqueueRefresh("interval"), config.refreshIntervalMs).unref();
 });

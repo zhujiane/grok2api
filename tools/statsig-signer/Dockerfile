@@ -1,7 +1,6 @@
-FROM mcr.microsoft.com/playwright:v1.52.0-noble
+FROM node:24-alpine
 
 ENV NODE_ENV=production \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     DATA_DIR=/data \
     LISTEN=0.0.0.0:8788
 
@@ -12,8 +11,8 @@ RUN npm ci --omit=dev --ignore-scripts
 
 COPY src ./src
 
-RUN mkdir -p /data && chown -R pwuser:pwuser /data /app
-USER pwuser
+RUN mkdir -p /data && chown -R node:node /data /app
+USER node
 VOLUME ["/data"]
 EXPOSE 8788
 

@@ -2,7 +2,7 @@ import http from "node:http";
 
 import { log } from "./log.js";
 import { parseSsoInput, publicSsoView } from "./store.js";
-import { generateStatsigID, validStatsigID } from "./statsig.js";
+import { decodeMetaSeed, generateStatsigID, validStatsigID } from "./statsig.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -22,8 +22,8 @@ export function createServer(config, store, session) {
       return;
     }
     if (request.method === "GET" && path === "/readyz") {
-      const hex = session.currentHex();
-      send(response, hex ? 200 : 503, { ready: Boolean(hex) });
+      const ready = session.isReady();
+      send(response, ready ? 200 : 503, { ready });
       return;
     }
     if (request.method === "GET" && path === "/v1/status") {
@@ -52,6 +52,7 @@ export function createServer(config, store, session) {
       }
       if (request.method === "DELETE") {
         await store.clear();
+        session.invalidateSso();
         await session.enqueueRefresh("sso_cleared");
         send(response, 200, { cleared: true });
         return;
@@ -74,31 +75,23 @@ export function createServer(config, store, session) {
     const path = String(body?.path || "").trim();
     let metaContent = String(body?.environment?.metaContent || body?.metaContent || "").trim();
     const sso = String(body?.sso || body?.token || "").trim();
-    if (!method || !path || (!metaContent && !sso)) {
-      send(response, 400, { error: { message: "method、path 均为必填" } });
+    if (!method || !path || !metaContent) {
+      send(response, 400, { error: { message: "method、path、metaContent 均为必填" } });
       return;
     }
-    let hex = "";
-    if (sso) {
-      try {
-        const ssoResult = await session.getHexForSso(sso);
-        if (ssoResult && typeof ssoResult === "object") {
-          hex = ssoResult.hex || "";
-          if (ssoResult.metaContent) {
-            metaContent = ssoResult.metaContent;
-          }
-        } else if (typeof ssoResult === "string") {
-          hex = ssoResult;
-        }
-      } catch (error) {
-        log.warn("sso_hex_fallback", { error: error.message });
+    if (metaContent) {
+      try { decodeMetaSeed(metaContent); } catch (error) {
+        send(response, 400, { error: { message: error.message } });
+        return;
       }
     }
-    if (!hex) {
-      hex = session.currentHex();
-    }
-    if (!hex) {
-      send(response, 503, { error: { message: "Statsig HEX 尚未就绪，请先配置 SSO 或等待刷新" } });
+    let hex;
+    try {
+      const result = await session.resolveEnvironment({ metaContent, curves: body?.environment?.curves });
+      hex = result.hex;
+      metaContent = result.metaContent;
+    } catch (error) {
+      send(response, 503, { error: { message: error.message } });
       return;
     }
     if (!metaContent) {
@@ -114,7 +107,7 @@ export function createServer(config, store, session) {
       log.info("statsig_signed", {
         method,
         path,
-        ssoUsed: Boolean(sso),
+        ssoProvided: Boolean(sso),
         hexLength: hex.length,
         metaLength: metaContent.length,
       });
@@ -145,6 +138,7 @@ export function createServer(config, store, session) {
       return;
     }
     const saved = await store.save(parsed);
+    session.invalidateSso();
     await session.enqueueRefresh("sso_updated");
     send(response, 200, publicSsoView(saved));
   }

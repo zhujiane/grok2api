@@ -9,7 +9,7 @@ test("POST /sign returns a 70-byte x-statsig-id", async () => {
   const store = createStore("/tmp/statsig-signer-test");
   const hex = "388bf10d70a3d70a3d70808cccccccccccd08cccccccccccd0d70a3d70a3d70800";
   const session = {
-    currentHex: () => hex,
+    resolveEnvironment: async ({ metaContent }) => ({ metaContent, hex }),
     status: async () => ({ hexReady: true }),
     enqueueRefresh: async () => {},
   };
@@ -32,9 +32,9 @@ test("POST /sign returns a 70-byte x-statsig-id", async () => {
   assert.equal(validStatsigID(body["x-statsig-id"]), true);
 });
 
-test("POST /sign is 503 before HEX is captured", async () => {
+test("POST /sign is 503 when environment is unavailable", async () => {
   const store = createStore("/tmp/statsig-signer-test");
-  const session = { currentHex: () => "", enqueueRefresh: async () => {} };
+  const session = { resolveEnvironment: async () => { throw new Error("unavailable"); } };
   const server = createServer({ token: "" }, store, session);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();

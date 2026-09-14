@@ -1,349 +1,79 @@
-import { chromium } from "playwright";
-
-import { solveClearance } from "./flaresolverr.js";
+import { DEFAULT_CURVES } from "./curves.js";
+import { readFile } from "node:fs/promises";
+import { computeAnimationHex, extractPage } from "./animation.js";
 import { log } from "./log.js";
 
-export function createSession(config, store) {
-  let browser;
-  let context;
-  let page;
-  let hex = "";
+export function createSession(config, store, fetchPage = fetch) {
+  let page = { metaContent: "", curves: DEFAULT_CURVES };
+  let source = "bundled";
   let lastRefreshAt = null;
   let lastError = "";
-  let browserReady = false;
-  let refreshQueue = Promise.resolve();
+  let pending;
   let closed = false;
+  const controller = new AbortController();
 
-  let lastClearance = { cookies: {}, userAgent: "" };
-  let lastClearanceAt = 0;
-  const CLEARANCE_MAX_AGE_MS = 25 * 60 * 1000;
-  const accountHexCache = new Map();
-  const inFlightSsoPromises = new Map();
-  const ACCOUNT_HEX_TTL_MS = 30 * 60 * 1000;
-
-  async function status() {
-    const sso = await store.load();
-    return {
-      browserReady,
-      hexReady: Boolean(hex),
-      hexPreview: hex ? `${hex.slice(0, 12)}…(${hex.length})` : "",
-      cachedAccountsCount: accountHexCache.size,
-      sso: publicFields(sso),
-      lastRefreshAt,
-      lastError,
-      proxyURL: config.proxyURL,
-      flareSolverrURL: config.flareSolverrURL,
-    };
-  }
-
-  function currentHex() {
-    return hex;
-  }
-
-  async function getHexForSso(ssoString) {
-    if (!ssoString) {
-      return { hex, metaContent: "" };
-    }
-    const now = Date.now();
-    const cached = accountHexCache.get(ssoString);
-    if (cached && cached.expiresAt > now && cached.hex) {
-      return cached;
-    }
-    if (inFlightSsoPromises.has(ssoString)) {
-      return inFlightSsoPromises.get(ssoString);
-    }
-    const promise = (async () => {
+  async function enqueueRefresh(reason) {
+    if (closed) return;
+    if (!config.pageFile && !config.refreshRemote) return;
+    if (pending) return pending;
+    pending = (async () => {
       try {
-        const ssoResult = await fetchHexForSso(ssoString);
-        if (ssoResult && ssoResult.hex) {
-          const entry = {
-            hex: ssoResult.hex,
-            metaContent: ssoResult.metaContent || "",
-            expiresAt: Date.now() + ACCOUNT_HEX_TTL_MS,
-          };
-          accountHexCache.set(ssoString, entry);
-          return entry;
-        }
-      } catch (err) {
-        log.warn("fetch_sso_hex_failed", { error: err.message });
-      } finally {
-        inFlightSsoPromises.delete(ssoString);
-      }
-      return { hex, metaContent: "" };
-    })();
-    inFlightSsoPromises.set(ssoString, promise);
-    return promise;
-  }
-
-  async function fetchHexForSso(ssoString) {
-    if (!browser) {
-      browser = await chromium.launch({
-        headless: config.headless,
-        args: [
-          "--disable-blink-features=AutomationControlled",
-          "--no-sandbox",
-          "--disable-dev-shm-usage",
-        ],
-      });
-    }
-
-    let clearance = lastClearance;
-    const clearanceAge = Date.now() - lastClearanceAt;
-    if (!clearance || !clearance.cookies || Object.keys(clearance.cookies).length === 0 || clearanceAge > CLEARANCE_MAX_AGE_MS) {
-      try {
-        clearance = await solveClearance({
-          flareSolverrURL: config.flareSolverrURL,
-          targetURL: config.grokBaseURL,
-          proxyURL: config.proxyURL,
-          timeoutMs: Math.max(config.navigationTimeoutMs, 60_000),
-        });
-        lastClearance = clearance;
-        lastClearanceAt = Date.now();
-      } catch (err) {
-        log.warn("flaresolverr_unavailable_for_sso", { error: err.message });
-      }
-    }
-
-    const userAgent = clearance?.userAgent || undefined;
-    const userContext = await browser.newContext({
-      proxy: config.proxyURL ? { server: config.proxyURL } : undefined,
-      userAgent,
-      locale: "en-US",
-      viewport: { width: 1280, height: 800 },
-    });
-
-    try {
-      await userContext.addInitScript(initScripts);
-      const cookies = buildCookies(config.grokBaseURL, { sso: ssoString, ssoRw: ssoString }, clearance?.cookies);
-      await userContext.addCookies(cookies);
-
-      const userPage = await userContext.newPage();
-      userPage.setDefaultTimeout(config.navigationTimeoutMs);
-      await userPage.goto(`${config.grokBaseURL}/imagine`, { waitUntil: "domcontentloaded" });
-
-      let captured = await waitForHex(userPage, 35000);
-      if (!captured) {
-        await userPage.evaluate(async () => {
-          try {
-            await fetch("/rest/rate-limits", {
-              method: "POST",
-              credentials: "include",
-              headers: { "content-type": "application/json" },
-              body: "{}",
-            });
-          } catch {}
-        });
-        captured = await waitForHex(userPage, 10000);
-      }
-
-      let metaContent = "";
-      try {
-        metaContent = await userPage.evaluate(() => {
-          const el = document.querySelector('meta[name*="site"][name*="verification"]');
-          return el ? el.content : "";
-        });
-      } catch {}
-
-      if (captured) {
-        log.info("sso_hex_captured", {
-          hexLength: captured.length,
-          hasMeta: Boolean(metaContent),
-          metaLength: metaContent.length,
-          ssoPrefix: ssoString.slice(0, 15),
-        });
-      }
-      return { hex: captured, metaContent };
-    } finally {
-      await userContext.close().catch(() => {});
-    }
-  }
-
-  function invalidateSso(ssoString) {
-    if (ssoString) {
-      accountHexCache.delete(ssoString);
-    }
-  }
-
-  function enqueueRefresh(reason) {
-    refreshQueue = refreshQueue.then(() => refresh(reason)).catch((error) => {
-      lastError = error.message;
-      log.error("statsig_refresh_failed", { reason, error: error.message });
-    });
-    return refreshQueue;
-  }
-
-  async function refresh(reason = "manual") {
-    if (closed) {
-      return;
-    }
-    let lastErrorCause = null;
-    for (let attempt = 1; attempt <= 5; attempt += 1) {
-      try {
-        await refreshOnce(reason, attempt);
-        return;
-      } catch (error) {
-        lastErrorCause = error;
-        log.warn("statsig_refresh_retry", { reason, attempt, error: error.message });
-        await sleep(Math.min(15_000, 2000 * attempt));
-      }
-    }
-    throw lastErrorCause || new Error("Statsig 刷新失败");
-  }
-
-  async function refreshOnce(reason, attempt) {
-    log.info("statsig_refresh_start", { reason, attempt });
-    const sso = await store.load();
-    let clearance = { cookies: {}, userAgent: sso.userAgent || "" };
-    try {
-      clearance = await solveClearance({
-        flareSolverrURL: config.flareSolverrURL,
-        targetURL: config.grokBaseURL,
-        proxyURL: config.proxyURL,
-        timeoutMs: Math.max(config.navigationTimeoutMs, 60_000),
-      });
-      lastClearance = clearance;
-      lastClearanceAt = Date.now();
-    } catch (error) {
-      log.warn("flaresolverr_unavailable", { error: error.message });
-    }
-
-    if (!browser) {
-      browser = await chromium.launch({
-        headless: config.headless,
-        args: [
-          "--disable-blink-features=AutomationControlled",
-          "--no-sandbox",
-          "--disable-dev-shm-usage",
-        ],
-      });
-    }
-    if (context) {
-      await context.close().catch(() => {});
-      context = null;
-      page = null;
-    }
-    const userAgent = clearance.userAgent || sso.userAgent || undefined;
-    context = await browser.newContext({
-      proxy: config.proxyURL ? { server: config.proxyURL } : undefined,
-      userAgent,
-      locale: "en-US",
-      viewport: { width: 1280, height: 800 },
-    });
-    await context.addInitScript(initScripts);
-    await context.addCookies(buildCookies(config.grokBaseURL, sso, clearance.cookies));
-    page = await context.newPage();
-    page.setDefaultTimeout(config.navigationTimeoutMs);
-    await page.goto(`${config.grokBaseURL}/`, { waitUntil: "domcontentloaded" });
-    hex = await waitForHex(page, config.hexWaitMs);
-    if (!hex) {
-      await page.evaluate(async () => {
-        try {
-          await fetch("/rest/rate-limits", {
-            method: "POST",
-            credentials: "include",
-            headers: { "content-type": "application/json" },
-            body: "{}",
+        let html;
+        if (config.pageFile) {
+          html = await readFile(config.pageFile, "utf8");
+        } else {
+          const sso = await store.load();
+          const cookies = { ...sso.extraCookies };
+          if (sso.sso) Object.assign(cookies, { sso: sso.sso, "sso-rw": sso.ssoRw || sso.sso });
+          const headers = { accept: "text/html", "user-agent": sso.userAgent || "Mozilla/5.0" };
+          if (Object.keys(cookies).length) headers.cookie = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+          const response = await fetchPage(`${config.grokBaseURL}/`, {
+            headers, redirect: "error",
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(config.fetchTimeoutMs || 8000)]),
           });
-        } catch {
-          // Capture happens in the digest hook regardless of HTTP status.
+          if (!response.ok) throw new Error(`Grok 页面返回 HTTP ${response.status}；请提供可直连出口或 STATSIG_PAGE_FILE`);
+          const chunks = [];
+          let size = 0;
+          for await (const chunk of response.body) {
+            size += chunk.length;
+            if (size > 8 * 1024 * 1024) throw new Error("Grok 页面超过 8 MiB");
+            chunks.push(chunk);
+          }
+          html = Buffer.concat(chunks).toString("utf8");
         }
-      });
-      hex = await waitForHex(page, config.hexWaitMs);
-    }
-    if (!hex) {
-      throw new Error("未能从 grok.com 捕获 Statsig HEX");
-    }
-    browserReady = true;
-    lastRefreshAt = new Date().toISOString();
-    lastError = "";
-    log.info("statsig_refresh_ok", { reason, attempt, hexLength: hex.length });
+        const next = extractPage(html);
+        if (!closed) {
+          page = next;
+          source = config.pageFile ? "file" : "remote";
+          lastRefreshAt = new Date().toISOString();
+          lastError = "";
+        }
+      } catch (error) {
+        lastError = error.message;
+        log.warn("statsig_refresh_failed", { reason, error: lastError });
+      } finally { pending = null; }
+    })();
+    return pending;
   }
 
-  async function close() {
-    closed = true;
-    browserReady = false;
-    accountHexCache.clear();
-    inFlightSsoPromises.clear();
-    if (context) {
-      await context.close().catch(() => {});
-    }
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
-  }
-
-  return { status, currentHex, getHexForSso, invalidateSso, enqueueRefresh, close };
-}
-
-function publicFields(sso) {
   return {
-    configured: Boolean(sso?.sso),
-    hasClearance: Boolean(sso?.extraCookies?.cf_clearance),
-    updatedAt: sso?.updatedAt || null,
+    enqueueRefresh,
+    isReady: () => Boolean(page) && !closed && (!config.pageFile || source !== "bundled"),
+    async resolveEnvironment({ metaContent, curves } = {}) {
+      if (curves) return { metaContent, hex: computeAnimationHex(metaContent, curves) };
+      if (closed) throw new Error("签名服务已关闭");
+      if (config.pageFile && source === "bundled") await enqueueRefresh("sign");
+      if (config.pageFile && source === "bundled") throw new Error(lastError || "曲线文件尚未就绪");
+      if (!page) throw new Error(lastError || "Statsig curves 尚未就绪");
+      const seed = metaContent || page.metaContent;
+      return { metaContent: seed, hex: computeAnimationHex(seed, page.curves) };
+    },
+    invalidateSso() { if (page) page = { ...page, metaContent: "" }; },
+    async status() {
+      const sso = await store.load();
+      return { mode: "javascript", curvesSource: source, hexReady: Boolean(page), lastRefreshAt, lastError,
+        sso: { configured: Boolean(sso.sso), hasClearance: Boolean(sso.extraCookies?.cf_clearance), updatedAt: sso.updatedAt } };
+    },
+    async close() { closed = true; controller.abort(); await pending; page = null; },
   };
-}
-
-function initScripts() {
-  Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-  const original = crypto.subtle.digest.bind(crypto.subtle);
-  crypto.subtle.digest = async function digest(algorithm, data) {
-    try {
-      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
-      const text = new TextDecoder().decode(bytes);
-      const index = text.indexOf("obfiowerehiring");
-      if (index >= 0) {
-        window.__statsigHex = text.slice(index + "obfiowerehiring".length);
-      }
-    } catch {
-      // Ignore probe failures; the original digest still runs.
-    }
-    return original(algorithm, data);
-  };
-}
-
-async function waitForHex(page, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await page.evaluate(() => window.__statsigHex || "");
-    if (value && value.includes && !value.includes("\0")) {
-      const trimmed = String(value).trim();
-      if (trimmed.length >= 16) {
-        return trimmed;
-      }
-    }
-    await sleep(250);
-  }
-  return "";
-}
-
-function buildCookies(baseURL, sso, clearanceCookies) {
-  const hostname = new URL(baseURL).hostname;
-  const domain = hostname.startsWith(".") ? hostname : `.${hostname.replace(/^www\./u, "")}`;
-  const cookies = [];
-  const merged = { ...(sso.extraCookies || {}), ...(clearanceCookies || {}) };
-  if (sso.sso) {
-    merged.sso = sso.sso;
-    merged["sso-rw"] = sso.ssoRw || sso.sso;
-  }
-  for (const [name, value] of Object.entries(merged)) {
-    if (!name || !value) {
-      continue;
-    }
-    cookies.push({
-      name,
-      value: String(value),
-      domain,
-      path: "/",
-      secure: true,
-      httpOnly: name === "sso" || name === "sso-rw" || name.startsWith("cf_"),
-      sameSite: "Lax",
-    });
-  }
-  return cookies;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

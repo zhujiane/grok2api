@@ -61,7 +61,7 @@ services:
   # 替换默认的 https://grok.wodf.de/sign。启动后在管理端设置：
   #   Grok Web → x-statsig 获取方式 = URL
   #   签名服务 URL = http://statsig-signer:8788/sign
-  # 然后 PUT /v1/sso 写入 Web 登录 Cookie。
+  # 纯 JS 签名；不再依赖 WARP、FlareSolverr 或 Chromium。
 
   statsig-signer:
     container_name: grok2api-statsig-signer
@@ -74,19 +74,13 @@ services:
       TZ: "${TZ:-Asia/Shanghai}"
       LISTEN: "0.0.0.0:8788"
       GROK_BASE_URL: "${GROK_BASE_URL:-https://grok.com}"
-      PROXY_URL: "${STATSIG_PROXY_URL:-socks5://warp:1080}"
-      FLARESOLVERR_URL: "${FLARESOLVERR_URL:-http://flaresolverr:8191}"
       STATSIG_SIGNER_TOKEN: "${STATSIG_SIGNER_TOKEN:-}"
       DATA_DIR: /data
       REFRESH_INTERVAL: "${STATSIG_REFRESH_INTERVAL:-10m}"
     volumes:
       - statsig-signer-data:/data
-    depends_on:
-      - warp
-      - flaresolverr
     restart: unless-stopped
     init: true
-    shm_size: 1gb
     security_opt:
       - no-new-privileges:true
 
