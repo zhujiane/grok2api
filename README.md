@@ -166,10 +166,10 @@ Each Provider keeps its own credentials, quota, health, cooldown, concurrency, a
 
 ## Quick start
 
-Official images support `linux/amd64` and `linux/arm64`.
+This fork's Docker image is `ghcr.io/zhujiane/grok2api:latest` and supports `linux/amd64` and `linux/arm64`. The `latest` and `main` tags track this repository's `main` branch; version tags publish the corresponding release.
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/zhujiane/grok2api.git
 cd grok2api
 cp config.example.yaml config.yaml
 ```
@@ -191,6 +191,8 @@ bootstrapAdmin:
   password: "replace-with-a-strong-password"
 ```
 
+Compose uses this fork's image by default. To pin a version or use another image, set `GROK2API_IMAGE` in `.env`.
+
 Start the service:
 
 ```bash
@@ -199,7 +201,7 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-Open `http://127.0.0.1:8000`. The image already includes the frontend; SQLite data and local media are stored in the Compose volume.
+Open `http://127.0.0.1:8002` (the default Compose host port; override with `GROK2API_PORT`). The image already includes the frontend; SQLite data and local media are stored in the Compose volume.
 
 ### Run from source
 

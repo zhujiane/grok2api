@@ -154,10 +154,10 @@ flowchart LR
 
 ## 快速部署
 
-官方镜像支持 `linux/amd64` 和 `linux/arm64`。
+本 fork 的 Docker 镜像为 `ghcr.io/zhujiane/grok2api:latest`，支持 `linux/amd64` 和 `linux/arm64`。`latest` 和 `main` 标签跟随本仓库的 `main` 分支更新，版本标签对应各次版本发布。
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/zhujiane/grok2api.git
 cd grok2api
 cp config.example.yaml config.yaml
 ```
@@ -179,6 +179,8 @@ bootstrapAdmin:
   password: "替换为强密码"
 ```
 
+Compose 默认使用本 fork 的镜像。如需固定版本或使用其他镜像，可在 `.env` 中设置 `GROK2API_IMAGE`。
+
 启动服务：
 
 ```bash
@@ -187,7 +189,7 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-访问 `http://127.0.0.1:8000`。镜像已包含前端，SQLite 数据库与本地媒体保存在 Compose 数据卷中。
+访问 `http://127.0.0.1:8002`（Compose 默认宿主机端口，可通过 `GROK2API_PORT` 修改）。镜像已包含前端，SQLite 数据库与本地媒体保存在 Compose 数据卷中。
 
 ### 源码运行
 
