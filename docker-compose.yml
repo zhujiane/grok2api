@@ -11,6 +11,13 @@ services:
       # 非空时覆盖 config.yaml 的 PostgreSQL DSN，并自动启用 postgres。
       GROK2API_DATABASE_URL: "${GROK2API_DATABASE_URL:-}"
       GROK2API_QUALITY_GUARD_DIR: /var/lib/grok2api-quality-guard
+      # 宿主机 Docker 若配置了全局代理，会向容器注入 HTTP(S)_PROXY，导致容器内
+      # 健康检查（127.0.0.1）和访问 statsig-signer 等内部服务被错误代理。
+      # 网关自身的出站代理由“出口代理”设置显式管理，这里显式清空。
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     volumes:
       - "${GROK2API_CONFIG:-./config.yaml}:/run/grok2api/config.yaml:ro"
       - grok2api-data:/app/data
@@ -21,41 +28,43 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # ================================ WARP ================================
+  # ================================ WARP (已停用) ================================
   # 出口代理：在管理端“设置 -> 出口代理”中新增 socks5://warp:1080。
   # 主机映射避开 1080 占用，容器内仍是 1080，Compose 网络用 socks5://warp:1080。
+  # 当前部署不使用 WARP，如需启用请取消以下注释。
 
-  warp:
-    container_name: warp
-    image: caomingjun/warp:latest
-    restart: unless-stopped
-    # add removed tun rule back (https://github.com/opencontainers/runc/pull/3468)
-    device_cgroup_rules:
-      - "c 10:200 rwm"
-    ports:
-      - "127.0.0.1:${WARP_PORT:-10808}:1080"
-    environment:
-      - WARP_SLEEP=2
-    cap_add:
-      - MKNOD
-      - AUDIT_WRITE
-      - NET_ADMIN
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=0
-      - net.ipv4.conf.all.src_valid_mark=1
-    volumes:
-      - warp-data:/var/lib/cloudflare-warp
+  # warp:
+  #   container_name: warp
+  #   image: caomingjun/warp:latest
+  #   restart: unless-stopped
+  #   # add removed tun rule back (https://github.com/opencontainers/runc/pull/3468)
+  #   device_cgroup_rules:
+  #     - "c 10:200 rwm"
+  #   ports:
+  #     - "127.0.0.1:${WARP_PORT:-10808}:1080"
+  #   environment:
+  #     - WARP_SLEEP=2
+  #   cap_add:
+  #     - MKNOD
+  #     - AUDIT_WRITE
+  #     - NET_ADMIN
+  #   sysctls:
+  #     - net.ipv6.conf.all.disable_ipv6=0
+  #     - net.ipv4.conf.all.src_valid_mark=1
+  #   volumes:
+  #     - warp-data:/var/lib/cloudflare-warp
 
-  # ================================ FLARESOLVERR ================================
+  # ================================ FLARESOLVERR (已停用) ================================
   # 在管理端将 Clearance 模式设为 FlareSolverr 或按需刷新，并使用 http://flaresolverr:8191。
+  # 当前部署不使用 FlareSolverr，如需启用请取消以下注释。
 
-  flaresolverr:
-    container_name: flaresolverr
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    environment:
-      TZ: Asia/Shanghai
-      LOG_LEVEL: info
-    restart: unless-stopped
+  # flaresolverr:
+  #   container_name: flaresolverr
+  #   image: ghcr.io/flaresolverr/flaresolverr:latest
+  #   environment:
+  #     TZ: Asia/Shanghai
+  #     LOG_LEVEL: info
+  #   restart: unless-stopped
 
   # ================================ STATSIG SIGNER ================================
   # 替换默认的 https://grok.wodf.de/sign。启动后在管理端设置：
@@ -117,5 +126,5 @@ services:
 volumes:
   grok2api-data:
   quality_guard_state:
-  warp-data:
   statsig-signer-data:
+  # warp-data:
