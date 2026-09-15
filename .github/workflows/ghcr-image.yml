@@ -69,6 +69,10 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
+      - name: Test statsig-signer
+        working-directory: tools/statsig-signer
+        run: npm test
+
   check_ghcr_image:
     name: Build image (${{ matrix.arch }})
     if: github.event_name != 'push'
@@ -189,6 +193,159 @@ jobs:
         run: |
           image_name=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
           echo "name=ghcr.io/$image_name" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create manifest list
+        shell: bash
+        run: |
+          jq -cr '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON" | while read -r tag; do
+            docker buildx imagetools create \
+              -t "$tag" \
+              "${tag}-amd64" \
+              "${tag}-arm64"
+          done
+
+      - name: Inspect image
+        run: docker buildx imagetools inspect "${{ steps.image.outputs.name }}:${{ steps.meta.outputs.version }}"
+
+  check_statsig_signer_image:
+    name: Build statsig-signer image (${{ matrix.arch }})
+    if: github.event_name != 'push'
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./tools/statsig-signer
+          file: ./tools/statsig-signer/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=statsig-signer-${{ matrix.arch }}
+          provenance: false
+          sbom: false
+
+  build_statsig_signer_image:
+    name: Publish statsig-signer image (${{ matrix.arch }})
+    if: github.event_name == 'push'
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: |
+          image_name=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/$image_name-statsig-signer" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=branch,suffix=-${{ matrix.arch }}
+            type=ref,event=tag,suffix=-${{ matrix.arch }}
+            type=raw,value=latest-${{ matrix.arch }},enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: ./tools/statsig-signer
+          file: ./tools/statsig-signer/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=statsig-signer-${{ matrix.arch }}
+          cache-to: type=gha,scope=statsig-signer-${{ matrix.arch }},mode=max
+          provenance: mode=max
+          sbom: true
+
+  merge_statsig_signer:
+    name: Merge statsig-signer image
+    if: github.event_name == 'push'
+    needs:
+      - build_statsig_signer_image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Normalize image name
+        id: image
+        shell: bash
+        run: |
+          image_name=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/$image_name-statsig-signer" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
         id: meta

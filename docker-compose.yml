@@ -76,6 +76,7 @@ services:
 
   statsig-signer:
     container_name: grok2api-statsig-signer
+    image: "${STATSIG_SIGNER_IMAGE:-ghcr.io/zhujiane/grok2api-statsig-signer:latest}"
     build:
       context: ./tools/statsig-signer
       dockerfile: Dockerfile
