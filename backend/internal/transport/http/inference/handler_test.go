@@ -633,6 +633,11 @@ func TestVideoGenerationResponseMatchesOfficialPollingShape(t *testing.T) {
 	if failed["status"] != "failed" || !ok || errorValue["code"] != "service_unavailable" || failed["model"] != nil || failed["progress"] != nil {
 		t.Fatalf("failed response=%#v", failed)
 	}
+	rejected := videoGenerationResponse(mediadomain.Job{Status: mediadomain.StatusFailed, ErrorCode: "request_rejected", ErrorMessage: "This page is out of date"})
+	rejectedError, ok := rejected["error"].(gin.H)
+	if !ok || rejectedError["code"] != "invalid_request" {
+		t.Fatalf("request-scoped failed response=%#v", rejected)
+	}
 }
 
 func TestImageGenerationEndpointValidatesXAIContractBeforeRouting(t *testing.T) {

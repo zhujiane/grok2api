@@ -1,0 +1,27 @@
+[
+  {
+    "source": "browser_capture",
+    "meta": "ZZ4antF3EwkPNPAfQV2JB6rcMx/b46h6mXeng4S30Kmbfg9td/mx0gBX2USgC4bh",
+    "hex": "5692100fd70a3d70a3d701c28f5c28f5c2901c28f5c28f5c290fd70a3d70a3d700"
+  },
+  {
+    "source": "browser2",
+    "meta": "IO8tSoodp+X+M6vz12ZeTtIKyqNevo5ZJaE81ieZ4lArYpAUzo6rbp0720Ect4E3",
+    "hex": "c77ab30d47ae147ae147808f5c28f5c28f608f5c28f5c28f60d47ae147ae147800"
+  },
+  {
+    "source": "browser3",
+    "meta": "oP5THwJGuqwjYR0TP1/xC8tlwd7DNTXz3zP5ckAzaFbkqggu6ZnzqcoWiyiEB/Qs",
+    "hex": "9aebff06e147ae147ae140e66666666666680e666666666666806e147ae147ae1400"
+  },
+  {
+    "source": "browser_final",
+    "meta": "CMGf/31foUDGY7ct/TPY0t8oVCi58IVqGANUsbCuUcwJnTdXKdoiQE8P6fy2W0oA",
+    "hex": "e8ca1e0828f5c28f5c290dc28f5c28f5c280dc28f5c28f5c280828f5c28f5c2900"
+  },
+  {
+    "source": "trace-codex",
+    "meta": "sBi0d4O0oWtur4la9ztihZKqN9k3iTyA67viThvXy1qNEWTQJ3I2wx0VcC7PNcw8",
+    "hex": "1cabd0a8f5c28f5c28f80c0c0a8f5c28f5c28f800"
+  }
+]

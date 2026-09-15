@@ -2,7 +2,8 @@ FROM node:24-alpine
 
 ENV NODE_ENV=production \
     DATA_DIR=/data \
-    LISTEN=0.0.0.0:8788
+    LISTEN=0.0.0.0:8788 \
+    NODE_USE_ENV_PROXY=1
 
 WORKDIR /app
 

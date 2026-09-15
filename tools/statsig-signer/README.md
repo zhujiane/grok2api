@@ -64,6 +64,12 @@ npm start
   可通过 `/v1/sso` 保存 Cookie 和 User-Agent 供此可选请求使用。
   直连遇到 Cloudflare 403 会记录错误并保留现有曲线，不会自动启动浏览器。
 
+Compose 默认已开启 `REFRESH_REMOTE`。容器不需要 Chromium：Node 24 的 `fetch`
+本身就能读取 `http_proxy` / `https_proxy`，只需 `NODE_USE_ENV_PROXY=1`
+（Dockerfile 已内置）。Docker 守护进程的 `~/.docker/config.json` 代理会自动
+注入容器，成功刷新后 `/v1/status` 的 `curvesSource` 为 `remote`。若出口无法直连
+Grok，远程刷新失败会保留上次成功的曲线；内置快照只作为首次启动的回退。
+
 默认不请求 Grok。离线签名本身不需要 Cloudflare clearance；主网关访问 Grok
 是否需要代理或 clearance 取决于其出口网络，这不属于签名服务的依赖。
 
@@ -92,7 +98,7 @@ npm start
 | STATSIG_SIGNER_TOKEN | 空 | 管理接口令牌 |
 | DATA_DIR | 本地 `./data` / 容器 `/data` | 可选 Cookie 存储 |
 | STATSIG_PAGE_FILE | 空 | 本地曲线页面，优先于远程刷新 |
-| REFRESH_REMOTE | `false` | 开启直连页面刷新 |
+| REFRESH_REMOTE | `false` | 开启直连页面刷新（Compose 默认 `true`） |
 | GROK_BASE_URL | `https://grok.com` | 可选远程页面地址 |
 | FETCH_TIMEOUT | `8s` | 远程读取总超时 |
 | REFRESH_INTERVAL | `10m` | 配置页面来源的刷新间隔 |
@@ -103,8 +109,15 @@ npm start
 
 ## 验证范围
 
-`npm test` 覆盖公开浏览器抓取的 HEX 向量、SVG 分组 / 行选择、HTML / RSC
-解析、离线 HTTP 签名、不同 seed、刷新合并和失败回退。
-测试向量来源是曲线快照同一仓库的 `compute_test.go`。
-这些测试不等同于当前 Grok 上游的在线验收；当前环境直连 Grok 返回 403，
-尚未完成真实聊天 / 视频请求验收。
+`npm test` 覆盖 5 组独立浏览器 digest HEX 样本、SVG 分组 / 行独立选择、
+HTML / RSC 解析、离线 HTTP 签名、不同 seed、刷新合并和失败回退。
+样本保存在 `src/fixtures/browser-vectors.json`，没有登录凭据。
+
+当前前端 `1_8k8gs54nr81.js` 使用 seed 第 5 字节选择 SVG 组、第 10 字节
+选择行，动画时间为第 36、5、24 字节各取模 16 后的乘积，再取整至 10ms
+（以上下标均从 0 开始）。曲线刷新只能更新数值，不能自动适配算法索引变化。
+
+2026-09-15 在线对照：同账号、同 seed、同视频请求下，旧算法返回
+403 / code 7，修复后 `/sign` 返回的签名对应请求返回 429 / code 8。
+视频生成完成尚未验收，当前受上游限流阻挡；详见
+[排查和修复记录](debug-video-403/FINDINGS.md)。

@@ -5,10 +5,12 @@ import { decodeMetaSeed } from "./statsig.js";
 export function computeAnimationHex(metaContent, curves) {
   const seed = decodeMetaSeed(metaContent);
   validateCurves(curves);
+  // Grok chunk 1_8k8gs54nr81.js: group byte 5, row byte 10;
+  // animation time uses bytes 36, 5, 24 (the older build used 22–24).
   const rows = curves[seed[5] % curves.length];
-  const { color, deg, bezier } = rows[seed[5] % rows.length];
+  const { color, deg, bezier } = rows[seed[10] % rows.length];
   const controls = bezier.map((v, i) => Number((v * ((i % 2 ? 2 : 1) / 255) - (i % 2 ? 1 : 0)).toFixed(2)));
-  const seek = Math.round((seed[24] % 16) * (seed[22] % 16) * (seed[23] % 16) / 10) * 10;
+  const seek = Math.round((seed[36] % 16) * (seed[5] % 16) * (seed[24] % 16) / 10) * 10;
   const progress = cubicBezier(...controls, seek / 4096);
   const rgb = color.slice(0, 3).map((v, i) => Math.max(0, Math.min(255, Math.round(v + (color[i + 3] - v) * progress))));
   const angle = Math.floor(deg * (300 / 255) + 60) * progress * Math.PI / 180;

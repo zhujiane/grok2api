@@ -1,21 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { computeAnimationHex, cubicBezier, extractPage } from "./animation.js";
 import { DEFAULT_CURVES } from "./curves.js";
 
 const seed = "t2ODAFY4ozXd0K2Y8MdI2XfxTDiJoakZPuoaKfcQn8VuasZMcKliyhA1pJ+o1oMf";
 
-test("animation matches published browser capture (see curves.js provenance)", () => {
-  assert.equal(computeAnimationHex(seed, DEFAULT_CURVES), "3bab9506b851eb851eb840e8f5c28f5c28f80e8f5c28f5c28f806b851eb851eb8400");
-});
+const vectors = JSON.parse(readFileSync(new URL("./fixtures/browser-vectors.json", import.meta.url), "utf8"));
 
-test("zero seek selects each SVG group and all 16 rows", () => {
-  for (let i = 0; i < 256; i += 1) {
-    const bytes = Buffer.alloc(48);
-    bytes[5] = i;
-    const row = DEFAULT_CURVES[i % 4][i % 16];
-    const expected = row.color.slice(0, 3).map(v => v.toString(16)).join("") + "100100";
-    assert.equal(computeAnimationHex(bytes.toString("base64"), DEFAULT_CURVES), expected);
+for (const { source, meta, hex } of vectors) {
+  test(`animation matches independent browser digest: ${source}`, () => {
+    assert.equal(computeAnimationHex(meta, DEFAULT_CURVES), hex);
+  });
+}
+
+test("zero seek selects SVG groups and rows independently", () => {
+  for (let group = 0; group < 4; group += 1) {
+    for (let row = 0; row < 16; row += 1) {
+      const bytes = Buffer.alloc(48);
+      bytes[5] = group;
+      bytes[10] = row;
+      const expected = DEFAULT_CURVES[group][row].color.slice(0, 3).map(v => v.toString(16)).join("") + "100100";
+      assert.equal(computeAnimationHex(bytes.toString("base64"), DEFAULT_CURVES), expected);
+    }
   }
 });
 

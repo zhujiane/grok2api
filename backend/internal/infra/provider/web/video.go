@@ -28,6 +28,16 @@ type webMediaUpstreamError struct {
 	bodyPrefixSHA256    string
 	bodyKind            string
 	cloudflareChallenge bool
+	requestScoped       bool
+}
+
+var _ provider.RequestScopedError = (*webMediaUpstreamError)(nil)
+
+// RequestScopedFailure 判定该错误是否由换号或换出口都无法解决。
+// code=7 签名失效、内容审核等属于确定性的请求级拒绝；Cloudflare/空正文/HTML
+// 挑战与账号封禁仍归账号或出口处理。视频网关据此避免把整个账号池无意义地试一遍。
+func (e *webMediaUpstreamError) RequestScopedFailure() bool {
+	return e != nil && e.requestScoped
 }
 
 func (e *webMediaUpstreamError) Error() string {
@@ -108,7 +118,7 @@ var (
 // body metadata and a prefix hash, never the upstream response body itself.
 func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMediaUpstreamError {
 	digest := sha256.Sum256(body)
-	return &webMediaUpstreamError{
+	upstreamErr := &webMediaUpstreamError{
 		status:              status,
 		summary:             summarizeWebMediaUpstreamError(status, body, truncated),
 		bodyBytes:           len(body),
@@ -117,6 +127,35 @@ func newWebMediaUpstreamError(status int, body []byte, truncated bool) *webMedia
 		bodyKind:            classifyWebMediaDiagnosticBody(body),
 		cloudflareChallenge: isCloudflareChallengeBody(body),
 	}
+	upstreamErr.requestScoped = isRequestScopedWebMediaError(upstreamErr, body)
+	return upstreamErr
+}
+
+// isRequestScopedWebMediaError 只识别高置信度的请求级拒绝：签名失效（code=7 /
+// anti-bot / page is out of date）与内容安全审核。这些失败与账号额度无关，
+// 换号无法解决，网关必须直接终止而不是轮询整个账号池。
+// 账号封禁、Cloudflare 挑战与额度耗尽不在此列，仍交由账号/出口/额度逻辑处理。
+func isRequestScopedWebMediaError(e *webMediaUpstreamError, body []byte) bool {
+	if e == nil || e.status != http.StatusForbidden {
+		return false
+	}
+	if isStatsigRefreshableMediaError(e, body) {
+		return true
+	}
+	if e.bodyKind != "json" || provider.IsDefinitiveAccountBlockBody(body) {
+		return false
+	}
+	code, message, structured := extractWebMediaUpstreamErrorFields(body)
+	if !structured {
+		return false
+	}
+	normalized := strings.ToLower(message + " " + code)
+	return strings.Contains(normalized, "content-moderated") ||
+		strings.Contains(normalized, "content_moderated") ||
+		strings.Contains(normalized, "content violates usage guidelines") ||
+		strings.Contains(normalized, "safety_check_type_") ||
+		strings.Contains(normalized, "content policy") ||
+		strings.Contains(normalized, "content moderation")
 }
 
 func classifyWebMediaDiagnosticBody(body []byte) string {

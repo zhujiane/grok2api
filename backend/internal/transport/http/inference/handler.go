@@ -1117,6 +1117,8 @@ func officialVideoErrorCode(value string) string {
 		return "service_unavailable"
 	case "model_not_found":
 		return "invalid_argument"
+	case "request_rejected":
+		return "invalid_request"
 	default:
 		return "internal_error"
 	}

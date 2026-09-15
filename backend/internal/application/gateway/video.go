@@ -654,7 +654,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 				// Web anti-bot 403 is egress-scoped. Retry the same account once so
 				// egress invalidation can rebuild the route, then move on normally.
 				failureHandled = true
-				if safeCreateFailure {
+				if provider.IsRequestScopedError(err) {
+					// 签名失效（code=7）或内容审核等确定性请求级拒绝：换号、换出口
+					// 都无法解决，直接失败，避免把整个账号池无意义地试一遍。
+					retriableCreate = false
+				} else if safeCreateFailure {
 					if !forbiddenEgressRetried[lease.Credential.ID] {
 						forbiddenEgressRetried[lease.Credential.ID] = true
 						retryPinnedAccountID = lease.Credential.ID
@@ -703,9 +707,14 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			if hasStatus {
 				upstreamStatus = status
 			}
-			if errors.Is(err, provider.ErrUnauthorized) || (hasStatus && (status == http.StatusUnauthorized || status == http.StatusForbidden)) {
+			switch {
+			case provider.IsRequestScopedError(err):
+				// 确定性请求级拒绝（如签名 code=7、内容审核）：保留上游脱敏原因，
+				// 让调用方看到真实报错而不是笼统的「上游服务暂不可用」。
+				failureCode = "request_rejected"
+			case errors.Is(err, provider.ErrUnauthorized) || (hasStatus && (status == http.StatusUnauthorized || status == http.StatusForbidden)):
 				failureCode, publicErr = "provider_unavailable", errors.New("上游服务暂不可用")
-			} else if hasStatus && status == http.StatusTooManyRequests {
+			case hasStatus && status == http.StatusTooManyRequests:
 				failureCode = "rate_limited"
 			}
 			s.failVideoJob(parent, job, failureCode, publicErr, upstreamStatus, failureAttempts.snapshot())

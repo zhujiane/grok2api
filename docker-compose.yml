@@ -62,6 +62,8 @@ services:
   #   Grok Web → x-statsig 获取方式 = URL
   #   签名服务 URL = http://statsig-signer:8788/sign
   # 纯 JS 签名；不再依赖 WARP、FlareSolverr 或 Chromium。
+  # REFRESH_REMOTE 用 Node 直连（经 Docker 注入的 http_proxy）定时刷新曲线，
+  # 上游换构建后自动更新，失败时回退内置快照。
 
   statsig-signer:
     container_name: grok2api-statsig-signer
@@ -74,6 +76,7 @@ services:
       TZ: "${TZ:-Asia/Shanghai}"
       LISTEN: "0.0.0.0:8788"
       GROK_BASE_URL: "${GROK_BASE_URL:-https://grok.com}"
+      REFRESH_REMOTE: "${STATSIG_REFRESH_REMOTE:-true}"
       STATSIG_SIGNER_TOKEN: "${STATSIG_SIGNER_TOKEN:-}"
       DATA_DIR: /data
       REFRESH_INTERVAL: "${STATSIG_REFRESH_INTERVAL:-10m}"

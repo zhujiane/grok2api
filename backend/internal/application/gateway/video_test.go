@@ -741,10 +741,11 @@ func TestVideoAttemptPolicyStandaloneAndUnlimited(t *testing.T) {
 }
 
 type videoCreateFailoverAdapter struct {
-	mu       sync.Mutex
-	failures map[uint64]int
-	status   int
-	attempts []uint64
+	mu            sync.Mutex
+	failures      map[uint64]int
+	status        int
+	requestScoped bool
+	attempts      []uint64
 }
 
 func (a *videoCreateFailoverAdapter) Provider() account.Provider { return account.ProviderWeb }
@@ -767,10 +768,20 @@ func (a *videoCreateFailoverAdapter) GenerateVideo(_ context.Context, request pr
 		if a.status == 0 {
 			return provider.VideoResult{}, errors.New("unclassified create failure")
 		}
+		if a.requestScoped {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageCreate, a.status, requestScopedVideoError{status: a.status})
+		}
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageCreate, a.status, videoHTTPStatusError{status: a.status})
 	}
 	return provider.VideoResult{AssetID: "video_asset_00001", ContentType: "video/mp4"}, nil
 }
+
+// requestScopedVideoError 模拟 Web 签名失效（code=7）等确定性请求级拒绝。
+type requestScopedVideoError struct{ status int }
+
+func (e requestScopedVideoError) Error() string              { return http.StatusText(e.status) }
+func (e requestScopedVideoError) HTTPStatusCode() int        { return e.status }
+func (e requestScopedVideoError) RequestScopedFailure() bool { return true }
 
 func (a *videoCreateFailoverAdapter) Attempts() []uint64 {
 	a.mu.Lock()
@@ -898,5 +909,94 @@ func TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver(t *testing.T) {
 	}
 	if stored.Status != media.StatusFailed || stored.AccountID != first.ID {
 		t.Fatalf("unclassified failed job = %#v", stored)
+	}
+}
+
+// TestVideoWebRequestScopedForbiddenDoesNotRotateAccounts 验证签名失效（code=7）
+// 这类请求级 403 只会用当前账号尝试一次，不会把整个账号池无意义地试一遍。
+func TestVideoWebRequestScopedForbiddenDoesNotRotateAccounts(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-request-scoped.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-scoped", Prefix: "video-scoped", SecretHash: strings.Repeat("a", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	first := createAccount("first", 200)
+	second := createAccount("second", 100)
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &videoCreateFailoverAdapter{
+		failures:      map[uint64]int{first.ID: 5, second.ID: 5},
+		status:        http.StatusForbidden,
+		requestScoped: true,
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(10)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_request_scoped", RequestID: "request-video-scoped", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: first.ID, AccountName: first.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != first.ID {
+		t.Fatalf("request-scoped 403 attempts = %#v, want pinned account once", attempts)
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusFailed || stored.ErrorCode != "request_rejected" {
+		t.Fatalf("request-scoped failed job = %#v", stored)
 	}
 }
