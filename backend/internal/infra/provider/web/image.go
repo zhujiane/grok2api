@@ -1468,7 +1468,10 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 		}
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, referer)
-		a.applySignedStatsig(requestCtx, request, token, lease)
+		if signErr := a.applySignedStatsig(requestCtx, request, token, lease); signErr != nil && isVideoCall(ctx) {
+			cancel()
+			return nil, provider.WrapVideoStage(provider.VideoStagePrepare, http.StatusServiceUnavailable, fmt.Errorf("视频签名服务不可用: %w", signErr))
+		}
 		response, err := lease.DoDeferredForbidden(request)
 		if err != nil {
 			cancel()

@@ -744,6 +744,7 @@ type videoCreateFailoverAdapter struct {
 	mu       sync.Mutex
 	failures map[uint64]int
 	status   int
+	stage    provider.VideoStage
 	attempts []uint64
 }
 
@@ -767,7 +768,11 @@ func (a *videoCreateFailoverAdapter) GenerateVideo(_ context.Context, request pr
 		if a.status == 0 {
 			return provider.VideoResult{}, errors.New("unclassified create failure")
 		}
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageCreate, a.status, videoHTTPStatusError{status: a.status})
+		stage := a.stage
+		if stage == "" {
+			stage = provider.VideoStageCreate
+		}
+		return provider.VideoResult{}, provider.WrapVideoStage(stage, a.status, videoHTTPStatusError{status: a.status})
 	}
 	return provider.VideoResult{AssetID: "video_asset_00001", ContentType: "video/mp4"}, nil
 }
@@ -870,6 +875,34 @@ func TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver(t *testing.T) {
 
 	adapter.mu.Lock()
 	adapter.failures = map[uint64]int{first.ID: 1}
+	adapter.status = http.StatusServiceUnavailable
+	adapter.stage = provider.VideoStagePrepare
+	adapter.attempts = nil
+	adapter.mu.Unlock()
+	signJob := job
+	signJob.ID = "video_signer_unavailable"
+	signJob.RequestID = "request-video-signer-unavailable"
+	if err := mediaRepo.CreateMediaJob(ctx, signJob); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, signJob, route)
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != first.ID {
+		failed, _ := mediaRepo.GetMediaJob(ctx, signJob.ID, signJob.ClientKeyID)
+		t.Fatalf("signer failure attempts = %#v error=%s", attempts, failed.ErrorMessage)
+	}
+	stored, err = mediaRepo.GetMediaJob(ctx, signJob.ID, signJob.ClientKeyID)
+	if err != nil || stored.Status != media.StatusFailed {
+		t.Fatalf("signer failure job=%#v err=%v", stored, err)
+	}
+	// A failed job must release its concurrency slot immediately.
+	lease, err := selector.AcquirePinned(ctx, account.ProviderWeb, first.ID, route.ID, route.UpstreamModel, "", true)
+	if err != nil {
+		t.Fatalf("failed video leaked account lease: %v", err)
+	}
+	lease.Release()
+
+	adapter.mu.Lock()
+	adapter.failures = map[uint64]int{first.ID: 1}
 	adapter.status = 0
 	adapter.attempts = nil
 	adapter.mu.Unlock()
@@ -899,4 +932,5 @@ func TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver(t *testing.T) {
 	if stored.Status != media.StatusFailed || stored.AccountID != first.ID {
 		t.Fatalf("unclassified failed job = %#v", stored)
 	}
+
 }

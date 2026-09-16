@@ -488,9 +488,9 @@ func validStatsigID(value string) bool {
 	return err == nil && len(decoded) == 70
 }
 
-func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease) {
+func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease) error {
 	if request == nil {
-		return
+		return nil
 	}
 	cfg := a.config()
 	request.Header.Del("x-statsig-id")
@@ -498,10 +498,10 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		if value := strings.TrimSpace(cfg.StatsigManualValue); validStatsigID(value) {
 			request.Header.Set("x-statsig-id", value)
 		}
-		return
+		return nil
 	}
 	if a.statsig == nil {
-		return
+		return nil
 	}
 	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
 	if err == nil {
@@ -511,9 +511,10 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		} else if source == "stale" {
 			a.log().Warn("web_statsig_refresh_failed_using_stale", "method", request.Method, "path", request.URL.EscapedPath())
 		}
-		return
+		return nil
 	}
 	a.log().Warn("web_statsig_fetch_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
+	return err
 }
 
 // WarmStatsig 只使用一个 Web 账号和一个出口租约预热共享签名，不会逐账号访问上游。

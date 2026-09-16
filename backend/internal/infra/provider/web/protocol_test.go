@@ -2025,3 +2025,37 @@ func MarshalJSONBytes(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data
 }
+
+func TestGenerateVideoSignerFailureStopsBeforeSubmission(t *testing.T) {
+	upstreamCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sign" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		upstreamCalls++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: server.URL + "/sign", VideoTimeoutSeconds: 5}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	adapter.statsig.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) { return "page-meta", nil }
+	adapter.statsig.validateEndpoint = func(context.Context, string) error { return nil }
+	_, err = adapter.GenerateVideo(context.Background(), provider.VideoRequest{Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: token}, Prompt: "test", Duration: 5})
+	if stage, ok := provider.VideoErrorStage(err); !ok || stage != provider.VideoStagePrepare {
+		t.Fatalf("stage=%s err=%v", stage, err)
+	}
+	if status, _ := provider.ErrorHTTPStatus(err); status != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("unsigned upstream requests=%d", upstreamCalls)
+	}
+}
