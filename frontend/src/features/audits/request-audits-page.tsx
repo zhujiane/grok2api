@@ -667,10 +667,12 @@ function UsageMetric({ label, value, reasoningEffort }: {
 function reasoningEffortTone(effort: NonNullable<AuditDTO["reasoningEffort"]>): string {
   switch (effort) {
     case "none": return "text-muted-foreground";
+    case "minimal": return "text-teal-600 dark:text-teal-400";
     case "low": return "text-sky-600 dark:text-sky-400";
     case "medium": return "text-amber-600 dark:text-amber-400";
     case "high": return "text-orange-600 dark:text-orange-400";
     case "xhigh": return "text-rose-600 dark:text-rose-400";
+    case "max": return "text-fuchsia-600 dark:text-fuchsia-400";
     case "auto": return "text-violet-600 dark:text-violet-400";
     case "fixed": return "text-indigo-600 dark:text-indigo-400";
   }
