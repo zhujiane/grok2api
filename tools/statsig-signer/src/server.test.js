@@ -50,3 +50,15 @@ test("POST /sign is 503 before HEX is captured", async () => {
   server.close();
   assert.equal(response.status, 503);
 });
+
+test('readiness follows HEX availability while liveness stays up', async (t) => {
+  let hex = '';
+  const server = createServer({ token: '' }, {}, { currentHex: () => hex });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+  assert.equal((await fetch(`${base}/readyz`)).status, 503);
+  hex = 'captured';
+  assert.equal((await fetch(`${base}/readyz`)).status, 200);
+});

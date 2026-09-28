@@ -28,11 +28,12 @@ function envMs(name, fallbackMs) {
 export function loadConfig() {
   const listen = env("LISTEN", "0.0.0.0:8788");
   const [host, portText] = listen.includes(":") ? listen.split(":") : ["0.0.0.0", listen];
+  const proxyURL = env("PROXY_URL", env("WARP_PROXY_URL", "socks5://warp:1080"));
   return {
     host: host || "0.0.0.0",
     port: Number.parseInt(portText, 10) || 8788,
     grokBaseURL: env("GROK_BASE_URL", "https://grok.com").replace(/\/+$/u, ""),
-    proxyURL: env("PROXY_URL", env("WARP_PROXY_URL", "socks5://warp:1080")),
+    proxyURL: proxyURL.toLowerCase() === "direct" ? "" : proxyURL,
     flareSolverrURL: env("FLARESOLVERR_URL", "http://flaresolverr:8191"),
     token: env("STATSIG_SIGNER_TOKEN"),
     dataDir: env("DATA_DIR", path.resolve("data")),

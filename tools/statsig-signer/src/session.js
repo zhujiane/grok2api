@@ -79,6 +79,7 @@ export function createSession(config, store) {
     if (!browser) {
       browser = await chromium.launch({
         headless: config.headless,
+        executablePath: process.env.CHROMIUM_PATH || undefined,
         args: [
           "--disable-blink-features=AutomationControlled",
           "--no-sandbox",
@@ -149,7 +150,6 @@ export function createSession(config, store) {
           hexLength: captured.length,
           hasMeta: Boolean(metaContent),
           metaLength: metaContent.length,
-          ssoPrefix: ssoString.slice(0, 15),
         });
       }
       return { hex: captured, metaContent };
@@ -210,6 +210,7 @@ export function createSession(config, store) {
     if (!browser) {
       browser = await chromium.launch({
         headless: config.headless,
+        executablePath: process.env.CHROMIUM_PATH || undefined,
         args: [
           "--disable-blink-features=AutomationControlled",
           "--no-sandbox",
@@ -234,8 +235,8 @@ export function createSession(config, store) {
     page = await context.newPage();
     page.setDefaultTimeout(config.navigationTimeoutMs);
     await page.goto(`${config.grokBaseURL}/`, { waitUntil: "domcontentloaded" });
-    hex = await waitForHex(page, config.hexWaitMs);
-    if (!hex) {
+    let captured = await waitForHex(page, config.hexWaitMs);
+    if (!captured) {
       await page.evaluate(async () => {
         try {
           await fetch("/rest/rate-limits", {
@@ -248,11 +249,12 @@ export function createSession(config, store) {
           // Capture happens in the digest hook regardless of HTTP status.
         }
       });
-      hex = await waitForHex(page, config.hexWaitMs);
+      captured = await waitForHex(page, config.hexWaitMs);
     }
-    if (!hex) {
+    if (!captured) {
       throw new Error("未能从 grok.com 捕获 Statsig HEX");
     }
+    hex = captured;
     browserReady = true;
     lastRefreshAt = new Date().toISOString();
     lastError = "";
@@ -304,7 +306,13 @@ function initScripts() {
 async function waitForHex(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = await page.evaluate(() => window.__statsigHex || "");
+    const { value, regionBlocked } = await page.evaluate(() => ({
+      value: window.__statsigHex || "",
+      regionBlocked: document.body?.innerText.includes("This service is not available in your region."),
+    }));
+    if (regionBlocked) {
+      throw new Error("Grok 拒绝当前出口地区，请更换 PROXY_URL（direct 表示直连）");
+    }
     if (value && value.includes && !value.includes("\0")) {
       const trimmed = String(value).trim();
       if (trimmed.length >= 16) {

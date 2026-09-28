@@ -58,9 +58,24 @@ If `STATSIG_SIGNER_TOKEN` is set, send `Authorization: Bearer <token>` on
 | --- | --- | --- |
 | `LISTEN` | `0.0.0.0:8788` | Bind address |
 | `GROK_BASE_URL` | `https://grok.com` | Page used to harvest HEX |
-| `PROXY_URL` | `socks5://warp:1080` | Playwright + FlareSolverr egress |
+| `PROXY_URL` | `socks5://warp:1080` | Playwright + FlareSolverr egress; `direct` disables the proxy |
 | `FLARESOLVERR_URL` | `http://flaresolverr:8191` | Cloudflare clearance |
 | `STATSIG_SIGNER_TOKEN` | empty | Bearer token for SSO/refresh |
 | `DATA_DIR` | `/data` | Persisted SSO JSON |
 | `REFRESH_INTERVAL` | `10m` | Periodic page reload |
 | `HEADLESS` | `true` | Playwright headless mode |
+
+## Troubleshooting
+
+If Grok reports that the service is unavailable in your region, use an egress
+that Grok supports. For a host with working direct access, set
+`STATSIG_PROXY_URL=direct` in the Compose `.env` file and recreate the service:
+
+```bash
+docker compose up -d --build statsig-signer
+curl -f http://127.0.0.1:8788/readyz
+```
+
+Docker health checks use `/readyz`, so a running process without a captured HEX
+is unhealthy. Failed refreshes retain the last captured HEX; `/v1/status`
+reports the refresh error and the last successful refresh time.
