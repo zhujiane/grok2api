@@ -92,12 +92,21 @@ const DefaultPublicAPIBaseURL = "http://127.0.0.1:8000"
 
 // EffectivePublicAPIBaseURL 按运行设置、配置文件、内置默认值的顺序解析公开地址。
 func (c FrontendConfig) EffectivePublicAPIBaseURL() string {
+	if value := c.ConfiguredPublicAPIBaseURL(); value != "" {
+		return value
+	}
+	return DefaultPublicAPIBaseURL
+}
+
+// ConfiguredPublicAPIBaseURL returns only an explicitly configured address.
+// Request handlers use an empty result to build links from the incoming request.
+func (c FrontendConfig) ConfiguredPublicAPIBaseURL() string {
 	for _, value := range []string{c.PublicAPIBaseURLOverride, c.PublicAPIBaseURL} {
 		if value = strings.TrimRight(strings.TrimSpace(value), "/"); value != "" {
 			return value
 		}
 	}
-	return DefaultPublicAPIBaseURL
+	return ""
 }
 
 type DatabaseConfig struct {

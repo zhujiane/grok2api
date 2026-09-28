@@ -3,6 +3,7 @@ package inference
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,7 +176,8 @@ func TestWriteVideoContentNamesDownloadWithExtension(t *testing.T) {
 
 func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
-	response := videoGenerationResponse(mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted, UpstreamURL: "https://assets.grok.com/source.mp4"}, handler.videoContentURL("video_request_1"))
+	context := videoURLTestContext("internal.example:8000", false)
+	response := videoGenerationResponse(mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted, UpstreamURL: "https://assets.grok.com/source.mp4"}, handler.videoContentURL(context, "video_request_1"))
 	video, ok := response["video"].(gin.H)
 	if !ok || video["url"] != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
 		t.Fatalf("response = %#v", response)
@@ -187,11 +189,12 @@ func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 // and is therefore not usable in a browser or player.
 func TestVideoPlaybackURLPrefersPublicAssetRoute(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	context := videoURLTestContext("internal.example:8000", false)
 	job := mediadomain.Job{
 		ID: "video_request_1", Status: mediadomain.StatusCompleted,
 		UpstreamURL: "https://assets.grok.com/source.mp4", ResultAssetID: "vid_abc123",
 	}
-	response := videoGenerationResponse(job, handler.videoPlaybackURL(job))
+	response := videoGenerationResponse(job, handler.videoPlaybackURL(context, job))
 	video, ok := response["video"].(gin.H)
 	if !ok || video["url"] != "https://api.example.com/grok2api/v1/media/videos/vid_abc123" {
 		t.Fatalf("response = %#v", response)
@@ -202,8 +205,9 @@ func TestVideoPlaybackURLPrefersPublicAssetRoute(t *testing.T) {
 // only option and can still fall back to the upstream download path.
 func TestVideoPlaybackURLFallsBackToContentEndpoint(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	context := videoURLTestContext("internal.example:8000", false)
 	job := mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted}
-	if got := handler.videoPlaybackURL(job); got != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
+	if got := handler.videoPlaybackURL(context, job); got != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
 		t.Fatalf("fallback URL = %q", got)
 	}
 }
@@ -213,13 +217,41 @@ func TestVideoContentURLFollowsRuntimePublicAPIBase(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://static.example.com").SetPublicAPIBaseURLResolver(func() string {
 		return baseURL
 	})
-	if got := handler.videoContentURL("video_request_1"); got != "https://old.example.com/v1/videos/video_request_1/content" {
+	context := videoURLTestContext("internal.example:8000", false)
+	if got := handler.videoContentURL(context, "video_request_1"); got != "https://old.example.com/v1/videos/video_request_1/content" {
 		t.Fatalf("initial URL = %q", got)
 	}
 	baseURL = "https://new.example.com/api/"
-	if got := handler.videoContentURL("video_request_2"); got != "https://new.example.com/api/v1/videos/video_request_2/content" {
+	if got := handler.videoContentURL(context, "video_request_2"); got != "https://new.example.com/api/v1/videos/video_request_2/content" {
 		t.Fatalf("updated URL = %q", got)
 	}
+}
+
+func TestVideoURLUsesRequestAddressWhenPublicBaseIsEmpty(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://old.example.com").SetPublicAPIBaseURLResolver(func() string { return "" })
+	job := mediadomain.Job{ID: "video_request_1", ResultAssetID: "vid_abc123"}
+	for _, test := range []struct {
+		host, want string
+		tls        bool
+	}{
+		{"1.94.209.166:8002", "http://1.94.209.166:8002/v1/media/videos/vid_abc123", false},
+		{"172.26.115.39:8002", "http://172.26.115.39:8002/v1/media/videos/vid_abc123", false},
+		{"api.example.com", "https://api.example.com/v1/media/videos/vid_abc123", true},
+	} {
+		context := videoURLTestContext(test.host, test.tls)
+		if got := handler.videoPlaybackURL(context, job); got != test.want {
+			t.Fatalf("host %q: URL = %q, want %q", test.host, got, test.want)
+		}
+	}
+}
+
+func videoURLTestContext(host string, tlsEnabled bool) *gin.Context {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodGet, "http://"+host+"/v1/videos/video_request_1", nil)
+	if tlsEnabled {
+		context.Request.TLS = &tls.ConnectionState{}
+	}
+	return context
 }
 
 func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {

@@ -708,3 +708,13 @@ func TestEffectivePublicAPIBaseURLPriority(t *testing.T) {
 		})
 	}
 }
+
+func TestConfiguredPublicAPIBaseURLHasNoImplicitFallback(t *testing.T) {
+	if got := (FrontendConfig{}).ConfiguredPublicAPIBaseURL(); got != "" {
+		t.Fatalf("unconfigured URL = %q", got)
+	}
+	frontend := FrontendConfig{PublicAPIBaseURL: "https://yaml.example/", PublicAPIBaseURLOverride: "https://runtime.example/"}
+	if got := frontend.ConfiguredPublicAPIBaseURL(); got != "https://runtime.example" {
+		t.Fatalf("configured URL = %q", got)
+	}
+}

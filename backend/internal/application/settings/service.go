@@ -224,11 +224,11 @@ func (s *Service) Get() Snapshot {
 	return s.snapshotLocked()
 }
 
-// PublicAPIBaseURL 返回运行设置、配置文件或内置默认值解析后的公开 API 根地址。
+// PublicAPIBaseURL 返回显式配置的公开 API 根地址；留空时由请求方推断地址。
 func (s *Service) PublicAPIBaseURL() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg.Frontend.EffectivePublicAPIBaseURL()
+	return s.cfg.Frontend.ConfiguredPublicAPIBaseURL()
 }
 
 // Update 校验并持久化运行设置，再原子替换进程内配置。
