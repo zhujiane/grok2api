@@ -252,8 +252,19 @@ func boundWebMediaDiagnostic(value string, limit int) string {
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	ctx = withVideoCall(ctx)
-	if len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0 {
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Grok Web 当前仅支持文本生视频与首帧图生视频；参考图视频请使用 Build 或 Console Provider"))
+	if len(request.ReferenceAudios) > 0 {
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Grok Web 暂不支持 reference_audios；参考音频视频请使用 Build 或 Console Provider"))
+	}
+	if len(request.ReferenceURLs) > 0 {
+		if strings.TrimSpace(request.ImageURL) != "" {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("image 不能与 reference_images 同时使用"))
+		}
+		if strings.TrimSpace(request.Prompt) == "" {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("参考图视频必须提供 prompt"))
+		}
+		if strings.EqualFold(strings.TrimSpace(request.Resolution), "1080p") {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("reference_images 模式最高支持 720p"))
+		}
 	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
@@ -290,7 +301,22 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		}
 		inputAssets = []string{uploaded.MetadataID}
 	}
-	payload := videoCreatePayload(request.Prompt, ratio, resolution, segments[0], inputAssets)
+	var referenceAssets []string
+	for _, imageURL := range request.ReferenceURLs {
+		image, loadErr := a.loadChatImage(ctx, lease, imageURL, cfg.MaxInputImageBytes)
+		if loadErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, loadErr)
+		}
+		uploaded, uploadErr := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "video_reference_upload")
+		if uploadErr != nil {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, uploadErr)
+		}
+		if uploaded.MetadataID == "" {
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("上传参考图片成功但上游未返回 fileMetadataId"))
+		}
+		referenceAssets = append(referenceAssets, uploaded.MetadataID)
+	}
+	payload := videoCreatePayload(request.Prompt, ratio, resolution, segments[0], inputAssets, referenceAssets)
 	response, err := a.postJSON(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.VideoTimeoutSeconds)*time.Second)
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
@@ -559,9 +585,9 @@ func applyFreeWebVideoDurationCap(seconds, cap int, credential account.Credentia
 // Text-to-video uses mediaGenInput.textToVideo. First-frame image-to-video
 // uploads the still through the Imagine file API and switches the same
 // conversation endpoint to mediaGenInput.imageToVideo + inputAssets,
-// matching image-edit's imageToImage shape. Reference-to-video is not
-// part of the Free Web surface.
-func videoCreatePayload(prompt, ratio, resolution string, seconds int, inputAssets []string) map[string]any {
+// matching image-edit's imageToImage shape. Reference images use the separate
+// referenceToVideo input, including when there is only one reference image.
+func videoCreatePayload(prompt, ratio, resolution string, seconds int, inputAssets, referenceAssets []string) map[string]any {
 	generation := map[string]any{
 		"prompt":         prompt,
 		"aspectRatio":    ratio,
@@ -572,6 +598,10 @@ func videoCreatePayload(prompt, ratio, resolution string, seconds int, inputAsse
 	if len(inputAssets) > 0 {
 		mediaKey = "imageToVideo"
 		generation["inputAssets"] = append([]string(nil), inputAssets...)
+	}
+	if len(referenceAssets) > 0 {
+		mediaKey = "referenceToVideo"
+		generation["inputAssets"] = append([]string(nil), referenceAssets...)
 	}
 	return map[string]any{
 		"modelName":            "imagine-video-gen",

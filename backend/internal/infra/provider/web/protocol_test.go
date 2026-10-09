@@ -1694,7 +1694,7 @@ func TestParseVideoStreamFixture(t *testing.T) {
 }
 
 func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
-	payload := videoCreatePayload("雨后天晴！", "9:16", "480p", 6, nil)
+	payload := videoCreatePayload("雨后天晴！", "9:16", "480p", 6, nil, nil)
 	if len(payload) != 8 || payload["modelName"] != "imagine-video-gen" ||
 		payload["message"] != "雨后天晴！ --mode=custom" ||
 		payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true ||
@@ -1739,7 +1739,7 @@ func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
 }
 
 func TestImageToVideoPayloadUsesUploadedFirstFrameAssets(t *testing.T) {
-	payload := videoCreatePayload("镜头缓缓推进", "1:1", "480p", 6, []string{"file-meta-1"})
+	payload := videoCreatePayload("镜头缓缓推进", "1:1", "480p", 6, []string{"file-meta-1"}, nil)
 	mediaGenInput, ok := payload["mediaGenInput"].(map[string]any)
 	if !ok {
 		t.Fatalf("mediaGenInput = %#v", payload["mediaGenInput"])
@@ -1816,13 +1816,13 @@ func TestGenerateVideoUploadsFirstFrameIntoImageToVideo(t *testing.T) {
 	}
 
 	_, err = adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential:    account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
-		Prompt:        "test",
-		Duration:      6,
-		ReferenceURLs: []string{firstFramePNG},
+		Credential:      account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+		Prompt:          "test",
+		Duration:        6,
+		ReferenceAudios: []string{"voice-test"},
 	})
 	if err == nil {
-		t.Fatal("Web reference-to-video was accepted")
+		t.Fatal("Web reference audio was accepted")
 	}
 	if stage, ok := provider.VideoErrorStage(err); !ok || stage != provider.VideoStagePrepare {
 		t.Fatalf("reference rejection stage = %q, ok=%t, err=%v", stage, ok, err)

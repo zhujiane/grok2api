@@ -271,6 +271,8 @@ Web 使用内置目录并按账号等级过滤；更高等级继承低等级模�
 | `grok-imagine-image-edit` | 图像编辑 | Super | Images Edits |
 | `grok-imagine-video` | 视频 | Basic 480p；Super 720p | Videos |
 
+Web 视频支持文本、首帧图片（`image`）和参考图（`reference_images`）。参考图使用独立的 `referenceToVideo` 模式，单张也不会被当作首帧；支持图片 URL、Base64 Data URL 或已上传的 `file_id`，不可与 `image` 同用。Basic 账号建议指定 `resolution: "480p"`，默认时长上限为 6 秒。完整的本地分镜图调用示例见 [`grok2api-test/web_reference_video.sh`](grok2api-test/web_reference_video.sh)。
+
 ### Grok Console
 
 Console 使用当前版本内置目录。对话为无状态转发；图片、视频和语音使用 xAI 标准资源接口。

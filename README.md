@@ -293,6 +293,8 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-imagine-image-edit` | Image Edit   | Basic                          | Images Edits                            |
 | `grok-imagine-video`      | Video        | Basic for 480p; Super for 720p | Videos                                  |
 
+Web video supports text-to-video, first-frame input (`image`), and reference images (`reference_images`). References use a separate `referenceToVideo` request even for a single image; URL, Base64 Data URL, and uploaded `file_id` inputs are supported. Do not combine references with `image`. Basic accounts should request `480p`; their default duration cap is 6 seconds. See [`grok2api-test/web_reference_video.sh`](grok2api-test/web_reference_video.sh) for a complete local storyboard example.
+
 
 Web Imagine generation maps `aspect_ratio` and `n` to the browser protocol. `size` remains an OpenAI-compatible aspect-ratio alias, while generation-only `resolution` and `quality` are ignored on Web routes because the upstream product is selected by the model name rather than by those Console-oriented controls.
 

@@ -205,14 +205,14 @@ func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
 	if err := validateVideoRouteParameters(account.ProviderBuild, provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", false, 8, 15); err != nil {
 		t.Fatalf("Build 1.5 references error = %v", err)
 	}
-	// Web 支持文本生视频与首帧图生视频；参考图仍走 Build 或 Console。
+	// Web supports text, first-frame, and reference-to-video generation.
 	if err := validateVideoRouteParameters(account.ProviderWeb, provider.VideoOperationGenerate, "grok-imagine-video", "480p", false, 0, 6); err != nil {
 		t.Fatalf("Web text video error = %v", err)
 	}
 	if err := validateVideoRouteParameters(account.ProviderWeb, provider.VideoOperationGenerate, "grok-imagine-video", "480p", true, 0, 6); err != nil {
 		t.Fatalf("Web first-frame video error = %v", err)
 	}
-	if err := validateVideoRouteParameters(account.ProviderWeb, provider.VideoOperationGenerate, "grok-imagine-video", "480p", false, 1, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(account.ProviderWeb, provider.VideoOperationGenerate, "grok-imagine-video", "480p", false, 1, 5); err != nil {
 		t.Fatalf("Web reference video error = %v", err)
 	}
 }
