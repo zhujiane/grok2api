@@ -108,6 +108,13 @@ func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token stri
 			ssoToken = token
 		}
 		fresh, refreshErr := s.freshSignature(ctx, baseURL, signerURL, token, lease, method, path, ssoToken)
+		if errors.Is(refreshErr, errStatsigMetaMissing) {
+			// Current Grok pages no longer publish the Statsig seed and the web
+			// client sends authenticated requests without x-statsig-id. Cache this
+			// capability briefly, so legacy pages can resume signing after rollout.
+			s.store(key, "", now.Add(5*time.Minute), now)
+			return statsigSignResult{source: "not_required"}, nil
+		}
 		if refreshErr != nil {
 			if stale, ok := s.stale(key); ok {
 				return statsigSignResult{value: stale, source: "stale"}, nil
@@ -151,6 +158,12 @@ func (s *statsigSigner) Warm(ctx context.Context, baseURL, signerURL, token stri
 		return 0, nil
 	}
 	meta, err := s.fetchMeta(ctx, baseURL, token, lease)
+	if errors.Is(err, errStatsigMetaMissing) {
+		for _, target := range pending {
+			s.store(target.key, "", now.Add(5*time.Minute), now)
+		}
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -213,7 +226,7 @@ func (s *statsigSigner) cached(key string, now time.Time) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.entries[key]
-	if !ok || entry.value == "" || !now.Before(entry.expiresAt) {
+	if !ok || !now.Before(entry.expiresAt) {
 		return "", false
 	}
 	return entry.value, true
@@ -505,7 +518,9 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 	}
 	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
 	if err == nil {
-		request.Header.Set("x-statsig-id", value)
+		if value != "" {
+			request.Header.Set("x-statsig-id", value)
+		}
 		if source == "refresh" {
 			a.log().Info("web_statsig_refreshed", "method", request.Method, "path", request.URL.EscapedPath())
 		} else if source == "stale" {

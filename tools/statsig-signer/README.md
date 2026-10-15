@@ -1,5 +1,10 @@
 # grok2api Statsig signer
 
+Current Grok pages may omit `grok-site-verification` and send requests without
+`x-statsig-id`. The gateway detects this and skips signing for five minutes
+before checking again. This service remains available for legacy pages that
+still publish the verification seed. Network and signer errors remain errors.
+
 Local replacement for `https://grok.wodf.de/sign`. grok2api already fetches
 `grok-site-verification` itself; this service only returns `x-statsig-id`.
 

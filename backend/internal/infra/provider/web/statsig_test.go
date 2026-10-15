@@ -531,3 +531,48 @@ func TestVideoCallSignerUsesPerAccountSignatureAndShortTTL(t *testing.T) {
 		t.Fatalf("expected refresh after invalidation, got %v", srcVideoAfterInv)
 	}
 }
+
+func TestStatsigMissingSeedSkipsSigningAndRechecksAfterExpiry(t *testing.T) {
+	signer := newStatsigSigner()
+	now := time.Now()
+	signer.now = func() time.Time { return now }
+	fetches := 0
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		fetches++
+		return "", errStatsigMetaMissing
+	}
+	signer.validateEndpoint = func(context.Context, string) error { t.Fatal("obsolete signer must not be called"); return nil }
+	adapter := &Adapter{cfg: Config{BaseURL: "https://grok.com", StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign"}, statsig: signer}
+	for i := 0; i < 2; i++ {
+		request, _ := http.NewRequest(http.MethodPost, "https://grok.com/rest/test", nil)
+		request.Header.Set("x-statsig-id", "obsolete")
+		if err := adapter.applySignedStatsig(withVideoCall(context.Background()), request, "token", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := request.Header["X-Statsig-Id"]; exists {
+			t.Fatal("obsolete header retained")
+		}
+	}
+	if fetches != 1 {
+		t.Fatalf("fetches=%d", fetches)
+	}
+	now = now.Add(6 * time.Minute)
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "", errors.New("network failure")
+	}
+	request, _ := http.NewRequest(http.MethodPost, "https://grok.com/rest/test", nil)
+	if err := adapter.applySignedStatsig(withVideoCall(context.Background()), request, "token", nil); err == nil {
+		t.Fatal("network failures must remain errors after expiry")
+	}
+}
+
+func TestStatsigWarmWithoutSeed(t *testing.T) {
+	signer := newStatsigSigner()
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "", errStatsigMetaMissing
+	}
+	n, err := signer.Warm(context.Background(), "https://grok.com", "https://signer.example/sign", "token", nil, []statsigWarmTarget{{method: http.MethodPost, target: "https://grok.com/rest/test"}})
+	if err != nil || n != 0 {
+		t.Fatalf("warmed=%d err=%v", n, err)
+	}
+}
