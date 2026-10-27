@@ -1201,7 +1201,7 @@ func (s *Selector) quotaConsumptionSnapshot(provider account.Provider) map[accou
 }
 
 func quotaWindowExhausted(candidate account.RoutingCandidate, consumed map[accountQuotaConsumptionKey]int) bool {
-	if candidate.QuotaWindow == nil {
+	if candidate.QuotaWindow == nil || (candidate.Credential.Provider == account.ProviderConsole && candidate.QuotaWindow.Source == account.QuotaSourceAvailability) {
 		return false
 	}
 	remaining := candidate.QuotaWindow.Remaining - consumed[accountQuotaConsumptionKey{accountID: candidate.Credential.ID, mode: candidate.QuotaWindow.Mode}]

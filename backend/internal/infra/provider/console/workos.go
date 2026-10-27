@@ -39,9 +39,9 @@ const (
 var (
 	// errConsoleWorkOSUnlinked marks an account whose xAI identity has never
 	// been linked to Cursor: the login lands on Cursor's hosted sign-in page
-	// and the session reports cursorMerged=false. Such accounts have no Console
-	// credit pool, so retrying is pointless.
-	errConsoleWorkOSUnlinked = fmt.Errorf("%w: %w: Grok 账号未与 Cursor 关联（cursorMerged=false），无 Console 额度", provider.ErrUnauthorized, provider.ErrConsoleUnlinked)
+	// and the session reports cursorMerged=false. This describes dashboard
+	// access only; inference endpoints must be checked independently.
+	errConsoleWorkOSUnlinked = fmt.Errorf("%w: Grok 账号未关联 Cursor，用量面板不可访问；推理可用性需单独验证", provider.ErrConsoleUnlinked)
 	errConsoleWorkOSMissing  = errors.New("Console WorkOS 会话换取未返回完整 Cookie")
 	// errCloudflareRejected marks an HTML Cloudflare block or challenge page:
 	// an egress failure shared by every account on that exit.
@@ -132,7 +132,7 @@ func (a *Adapter) fetchConsoleUsage(ctx context.Context, credential account.Cred
 			cached = false
 			continue
 		case status == http.StatusUnauthorized:
-			return consoleUsageStatus{}, fmt.Errorf("%w: Console usage-status 拒绝新换取的 WorkOS 会话", provider.ErrUnauthorized)
+			return consoleUsageStatus{}, errors.New("Console usage-status 拒绝新换取的 WorkOS 会话")
 		case status == http.StatusForbidden && provider.IsDefinitiveAccountBlockBody(data):
 			return consoleUsageStatus{}, fmt.Errorf("%w: Console usage-status 账号被封禁", provider.ErrUnauthorized)
 		default:

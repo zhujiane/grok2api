@@ -692,7 +692,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 				retriableCreate = safeCreateFailure && !account.IsBuildSuper(lease.Credential, lease.Billing)
 			case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
 				state, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)
-				s.applyRateLimitReconciliation(failureCtx, lease.Credential, status, 0, state, reconcileErr)
+				s.applyRateLimitReconciliation(failureCtx, lease.Credential, status, 0, state, reconcileErr, route.UpstreamModel)
 				failureHandled = true
 				retriableCreate = safeCreateFailure
 			case status == http.StatusTooManyRequests || status == http.StatusPaymentRequired:

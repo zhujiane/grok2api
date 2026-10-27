@@ -3063,6 +3063,9 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) (quotaRefreshResu
 		}
 		snapshot.Windows = preserveActiveQuotaWindows(existing[id], snapshot.Windows, s.now())
 	}
+	if err := s.restoreProbedConsoleAccount(ctx, &value, snapshot.Windows); err != nil {
+		return quotaRefreshResult{}, err
+	}
 	if err := s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows); err != nil {
 		return quotaRefreshResult{}, err
 	}
@@ -3109,6 +3112,9 @@ func (s *Service) ReconcileRateLimit(ctx context.Context, id uint64, mode string
 				s.logger.Warn("console_rate_limit_quota_probe_failed", "account_id", id, "mode", mode, "error", err)
 			}
 			return RateLimitReconcileInconclusive, err
+		}
+		if window.Source == accountdomain.QuotaSourceAvailability {
+			return RateLimitReconcileInconclusive, nil
 		}
 		if window.Remaining == 0 || window.UsagePercent >= 100 {
 			return RateLimitReconcileExhausted, nil
@@ -3265,7 +3271,20 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 		// response as one authoritative snapshot so each media route observes the
 		// same upstream usage generation.
 		var snapshot provider.QuotaSnapshot
-		snapshot, err = adapter.SyncQuota(ctx, value)
+		// Background refreshes reuse recent availability checks. Manual all-quota
+		// sync still rechecks upstream, avoiding a synthesis for every chat call.
+		existing, loadErr := s.accounts.GetQuotaWindows(ctx, []uint64{id})
+		cached := loadErr == nil && value.AuthStatus == accountdomain.AuthStatusActive && completeConsoleUsageSnapshot(existing[id])
+		for _, candidate := range existing[id] {
+			if candidate.Source != accountdomain.QuotaSourceAvailability || candidate.SyncedAt == nil || s.now().Sub(*candidate.SyncedAt) >= 15*time.Minute {
+				cached = false
+			}
+		}
+		if cached {
+			snapshot = provider.QuotaSnapshot{Windows: existing[id], SyncedAt: *existing[id][0].SyncedAt}
+		} else {
+			snapshot, err = adapter.SyncQuota(ctx, value)
+		}
 		if err == nil {
 			windows = snapshot.Windows
 			syncedAt = snapshot.SyncedAt
@@ -3300,6 +3319,9 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 		syncedAt = s.now()
 	}
 	if value.Provider == accountdomain.ProviderConsole {
+		if err := s.restoreProbedConsoleAccount(ctx, &value, windows); err != nil {
+			return quotaRefreshResult{}, err
+		}
 		if err := s.accounts.ReplaceQuotaWindows(ctx, id, tier, syncedAt, windows); err != nil {
 			return quotaRefreshResult{}, err
 		}
@@ -3380,7 +3402,7 @@ func (s *Service) reconcileQuotaRecoveryWindow(ctx context.Context, providerValu
 // predicted 24-hour probe window; generic remote windows retain the shorter
 // fallback and transport failures use the recovery queue's bounded backoff.
 func quotaRecoveryDueAt(window accountdomain.QuotaWindow, now time.Time, exhausted bool) *time.Time {
-	if !exhausted {
+	if !exhausted || window.Source == accountdomain.QuotaSourceAvailability {
 		return nil
 	}
 	if window.ResetAt != nil && window.ResetAt.After(now) {
@@ -3938,7 +3960,7 @@ func (s *Service) SyncIncompleteConsoleQuotas(ctx context.Context) (int, int, er
 		}
 		ids := make([]uint64, 0, len(values))
 		for _, value := range values {
-			if value.Enabled && value.AuthStatus == accountdomain.AuthStatusActive {
+			if value.Enabled && (value.AuthStatus == accountdomain.AuthStatusActive || isConsoleUnlinkedAccount(value)) {
 				ids = append(ids, value.ID)
 			}
 		}
@@ -3947,8 +3969,12 @@ func (s *Service) SyncIncompleteConsoleQuotas(ctx context.Context) (int, int, er
 			return succeeded, failed, err
 		}
 		pending := make([]uint64, 0, len(ids))
+		legacyRejected := make(map[uint64]bool)
+		for _, value := range values {
+			legacyRejected[value.ID] = isConsoleUnlinkedAccount(value)
+		}
 		for _, id := range ids {
-			if !completeConsoleUsageSnapshot(windows[id]) {
+			if legacyRejected[id] || !completeConsoleUsageSnapshot(windows[id]) {
 				pending = append(pending, id)
 			}
 		}
@@ -3990,7 +4016,7 @@ func (s *Service) SyncStaleConsoleQuotas(ctx context.Context, before time.Time, 
 		}
 		ids := make([]uint64, 0, len(values))
 		for _, value := range values {
-			if value.Enabled && value.AuthStatus == accountdomain.AuthStatusActive {
+			if value.Enabled && (value.AuthStatus == accountdomain.AuthStatusActive || isConsoleUnlinkedAccount(value)) {
 				ids = append(ids, value.ID)
 			}
 		}
@@ -4075,7 +4101,7 @@ func consoleQuotaRefreshLockKey(id uint64) string {
 func completeConsoleUsageSnapshot(windows []accountdomain.QuotaWindow) bool {
 	var present uint8
 	for _, window := range windows {
-		if window.Source != accountdomain.QuotaSourceUpstream || window.SyncedAt == nil {
+		if (window.Source != accountdomain.QuotaSourceUpstream && window.Source != accountdomain.QuotaSourceAvailability) || window.SyncedAt == nil {
 			continue
 		}
 		switch window.Mode {
@@ -4777,5 +4803,21 @@ func mapRepositoryError(err error) error {
 	if errors.Is(err, repository.ErrConflict) {
 		return fmt.Errorf("%w: %s", ErrConflict, strings.TrimPrefix(err.Error(), repository.ErrConflict.Error()+": "))
 	}
+	return err
+}
+
+// restoreProbedConsoleAccount repairs only the old dashboard-only rejection.
+// Availability snapshots carry no numeric balance; confirmed model blocks remain separate.
+func (s *Service) restoreProbedConsoleAccount(ctx context.Context, value *accountdomain.Credential, windows []accountdomain.QuotaWindow) error {
+	if value.Provider != accountdomain.ProviderConsole || !isConsoleUnlinkedAccount(*value) {
+		return nil
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+	value.AuthStatus = accountdomain.AuthStatusActive
+	value.ReauthMarkedAt = nil
+	value.LastError = ""
+	_, err := s.accounts.Update(ctx, *value)
 	return err
 }

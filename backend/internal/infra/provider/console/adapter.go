@@ -114,7 +114,8 @@ func (a *Adapter) QuotaMode(upstreamModel string) string {
 		return QuotaModeVideo
 	}
 	if ResolveMedia(upstreamModel, modeldomain.CapabilityTTS) || ResolveMedia(upstreamModel, modeldomain.CapabilitySTT) || ResolveMedia(upstreamModel, modeldomain.CapabilityRealtime) {
-		return QuotaMode
+		// Voice endpoints can remain usable without a dashboard credit pool.
+		return ""
 	}
 	return ""
 }

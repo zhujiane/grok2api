@@ -24,7 +24,33 @@ const (
 func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
 	windows, syncedAt, err := a.syncConsoleQuotas(ctx, credential)
 	if err != nil {
-		return provider.QuotaSnapshot{}, err
+		if errors.Is(err, provider.ErrUnauthorized) || errors.Is(err, provider.ErrEgressBlocked) || ctx.Err() != nil {
+			return provider.QuotaSnapshot{}, err
+		}
+		// Dashboard eligibility and inference eligibility are independent. A real
+		// successful synthesis is evidence that the credential remains usable.
+		result, probeErr := a.SynthesizeSpeech(ctx, provider.TTSRequest{
+			Credential: credential, Text: "Hi.", Language: "en", VoiceID: "eve",
+		})
+		if probeErr != nil {
+			var status provider.HTTPStatusError
+			if errors.As(probeErr, &status) && status.HTTPStatusCode() == http.StatusUnauthorized {
+				return provider.QuotaSnapshot{}, fmt.Errorf("%w: Console TTS 探测认证失败", provider.ErrUnauthorized)
+			}
+			return provider.QuotaSnapshot{}, fmt.Errorf("Console 用量不可用（%v）；TTS 探测失败: %w", err, probeErr)
+		}
+		if len(result.Audio) == 0 || (!strings.HasPrefix(strings.ToLower(result.ContentType), "audio/") && !result.JSONEnvelope) {
+			return provider.QuotaSnapshot{}, errors.New("Console TTS 探测没有返回有效音频")
+		}
+		syncedAt = time.Now().UTC()
+		windows = make([]account.QuotaWindow, 0, 3)
+		for _, mode := range []string{QuotaMode, QuotaModeImage, QuotaModeVideo} {
+			windows = append(windows, account.QuotaWindow{
+				AccountID: credential.ID, Mode: mode, Source: account.QuotaSourceAvailability,
+				SyncedAt: &syncedAt, UpdatedAt: syncedAt,
+			})
+		}
+		a.logger().Info("console_availability_probe_succeeded", "account_id", credential.ID, "usage_error", err)
 	}
 	return provider.QuotaSnapshot{Windows: windows, SyncedAt: syncedAt}, nil
 }
@@ -33,11 +59,11 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 	if !isConsoleQuotaMode(mode) {
 		return account.QuotaWindow{}, fmt.Errorf("不支持的 Console 额度模式 %q", mode)
 	}
-	windows, _, err := a.syncConsoleQuotas(ctx, credential)
+	snapshot, err := a.SyncQuota(ctx, credential)
 	if err != nil {
 		return account.QuotaWindow{}, err
 	}
-	for _, window := range windows {
+	for _, window := range snapshot.Windows {
 		if window.Mode == mode {
 			return window, nil
 		}

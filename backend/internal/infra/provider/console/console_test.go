@@ -106,7 +106,7 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	for model, want := range map[string]string{
 		"grok-4.5": QuotaMode, "grok-imagine-image-quality": QuotaModeImage, "grok-imagine-image-2.0": QuotaModeImage,
 		"grok-imagine-image": QuotaModeImage, "grok-imagine-video": QuotaModeVideo, "grok-imagine-video-1.5": QuotaModeVideo,
-		"grok-voice-latest": QuotaMode, "grok-voice-think-fast-2.0": QuotaMode, "grok-voice-think-fast-1.0": QuotaMode, "grok-stt": QuotaMode,
+		"grok-voice-latest": "", "grok-voice-think-fast-2.0": "", "grok-voice-think-fast-1.0": "", "grok-stt": "",
 	} {
 		if got := adapter.QuotaMode(model); got != want {
 			t.Fatalf("QuotaMode(%q) = %q, want %q", model, got, want)

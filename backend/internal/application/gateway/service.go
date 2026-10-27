@@ -1430,11 +1430,13 @@ attemptLoop:
 					s.logger.Warn("upstream_request_scoped_forbidden", "request_id", input.RequestID, "account_id", credential.ID, "provider", credential.Provider, "status", response.StatusCode, "upstream_code", lastFailure.UpstreamCode)
 				}
 				// Fall through to the common success/error response path so the client receives the original 403.
-			} else if lastFailure.AccountBlocked || isConsoleNoCreditsFailure(credential.Provider, lastFailure) {
+			} else if !lastFailure.AccountBlocked && isConsoleNoCreditsFailure(credential.Provider, lastFailure) {
+				s.selector.MarkModelQuotaExhausted(ctx, credential, lease.Billing, route.UpstreamModel, 15*time.Minute)
+				lease.Release()
+				lastErr = fmt.Errorf("Console 模型暂无额度")
+				continue
+			} else if lastFailure.AccountBlocked {
 				reason := fmt.Sprintf("%s account is blocked", credential.Provider)
-				if !lastFailure.AccountBlocked {
-					reason = consoleNoCreditsReason
-				}
 				failureHandled := s.markReauthRequired(ctx, input.RequestID, credential, reason)
 				if lastFailure.AccountScoped && !failureHandled {
 					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
@@ -1529,7 +1531,7 @@ attemptLoop:
 			failureHandled := false
 			if lease.QuotaMode != "" && (response.StatusCode == http.StatusTooManyRequests || credential.Provider == accountdomain.ProviderConsole && response.StatusCode == http.StatusPaymentRequired) {
 				state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr)
+				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr, route.UpstreamModel)
 				failureHandled = true
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
 				// The Free subscription signal is account-scoped, but its billing
@@ -2056,18 +2058,16 @@ func (s *Service) markCredentialRejectedAfterPermanentRefresh(ctx context.Contex
 	s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
 }
 
-// consoleNoCreditsReason is recorded on Console accounts the upstream reports
-// as never provisioned. Retrying, cooling down or rotating egress cannot help.
-const consoleNoCreditsReason = accountdomain.LastErrorConsoleUnlinked
+// A credit denial is scoped to the requested model, not the SSO credential.
+const consoleNoCreditsReason = "grok_console model has no credits or licenses"
 
 func isConsoleNoCreditsFailure(upstreamProvider accountdomain.Provider, failure *UpstreamFailure) bool {
 	return upstreamProvider == accountdomain.ProviderConsole && failure != nil && failure.NoCreditsOrLicenses
 }
 
-// retireConsoleNoCreditsAccount inspects a Console 403 and, when it is the
-// permanent no-credits denial, marks the account reauthRequired. The body is
-// restored on the response either way.
-func (s *Service) retireConsoleNoCreditsAccount(ctx context.Context, requestID string, credential accountdomain.Credential, response *provider.Response) bool {
+// blockConsoleNoCreditsModel isolates credit denials to the requested model.
+// The same account can still serve TTS and other separately entitled models.
+func (s *Service) blockConsoleNoCreditsModel(ctx context.Context, requestID string, credential accountdomain.Credential, upstreamModel string, response *provider.Response) bool {
 	if credential.Provider != accountdomain.ProviderConsole || response == nil || response.StatusCode != http.StatusForbidden {
 		return false
 	}
@@ -2076,8 +2076,8 @@ func (s *Service) retireConsoleNoCreditsAccount(ctx context.Context, requestID s
 	if !provider.IsConsoleNoCreditsText(string(body)) {
 		return false
 	}
-	s.markReauthRequired(ctx, requestID, credential, consoleNoCreditsReason)
-	s.logger.Warn("console_account_no_credits", "request_id", requestID, "account_id", credential.ID)
+	s.selector.MarkModelQuotaExhausted(ctx, credential, nil, upstreamModel, 15*time.Minute)
+	s.logger.Warn("console_model_no_credits", "request_id", requestID, "account_id", credential.ID)
 	return true
 }
 
@@ -2210,8 +2210,20 @@ func forcesAccountFailover(status int, upstreamProvider accountdomain.Provider) 
 		(status == http.StatusPaymentRequired || status == http.StatusForbidden || status == http.StatusTooManyRequests)
 }
 
-func (s *Service) applyRateLimitReconciliation(ctx context.Context, credential accountdomain.Credential, status int, retryAfter time.Duration, state accountapp.RateLimitReconcileState, reconcileErr error) {
+func (s *Service) applyRateLimitReconciliation(ctx context.Context, credential accountdomain.Credential, status int, retryAfter time.Duration, state accountapp.RateLimitReconcileState, reconcileErr error, upstreamModels ...string) {
 	s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
+	if credential.Provider == accountdomain.ProviderConsole && len(upstreamModels) > 0 && upstreamModels[0] != "" {
+		// A chat or media rate/credit limit must not cool down independently
+		// entitled voice endpoints on the same SSO credential.
+		if retryAfter <= 0 {
+			retryAfter = 15 * time.Second
+			if status == http.StatusPaymentRequired {
+				retryAfter = 15 * time.Minute
+			}
+		}
+		s.selector.MarkModelQuotaExhausted(ctx, credential, nil, upstreamModels[0], retryAfter)
+		return
+	}
 	if reconcileErr == nil && state == accountapp.RateLimitReconcileExhausted {
 		return
 	}

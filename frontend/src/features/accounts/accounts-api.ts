@@ -111,7 +111,7 @@ export type AccountDTO = {
   createdAt: string;
   billing?: BillingDTO;
   quota: QuotaDTO;
-  quotaWindows?: Array<{ mode: string; remaining: number; total: number; usagePercent: number; breakdown?: Array<{ productCode: number; usagePercent: number }>; windowSeconds: number; resetAt?: string; syncedAt?: string; source: "default" | "estimated" | "upstream" }>;
+  quotaWindows?: Array<{ mode: string; remaining: number; total: number; usagePercent: number; breakdown?: Array<{ productCode: number; usagePercent: number }>; windowSeconds: number; resetAt?: string; syncedAt?: string; source: "default" | "estimated" | "upstream" | "availability" }>;
 };
 
 export type LinkedAccountDTO = {
@@ -183,7 +183,7 @@ const quotaValidator = hasShape({
 const quotaBreakdownValidator = hasShape({ productCode: isNumber, usagePercent: isNumber });
 const quotaWindowValidator = hasShape({
   mode: isString, remaining: isNumber, total: isNumber, usagePercent: isNumber, breakdown: isOptional(isArrayOf(quotaBreakdownValidator)),
-  windowSeconds: isNumber, resetAt: isOptional(isString), syncedAt: isOptional(isString), source: isOneOf("default", "estimated", "upstream"),
+  windowSeconds: isNumber, resetAt: isOptional(isString), syncedAt: isOptional(isString), source: isOneOf("default", "estimated", "upstream", "availability"),
 });
 const linkedAccountValidator = hasShape({ id: isString, provider: isOneOf("grok_build", "grok_web", "grok_console"), name: isString, email: isOptional(isString), userId: isOptional(isString) });
 const accountValidator = hasShape({

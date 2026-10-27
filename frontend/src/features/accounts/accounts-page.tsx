@@ -2366,7 +2366,7 @@ function AccountStatus({ account }: { account: AccountDTO }) {
     );
   }
   const consoleWindow = account.provider === "grok_console"
-    ? account.quotaWindows?.find((window) => window.mode === "console" && window.remaining <= 0)
+    ? account.quotaWindows?.find((window) => window.mode === "console" && window.source !== "availability" && window.remaining <= 0)
     : undefined;
   if (consoleWindow) {
     const detail = consoleWindow.resetAt

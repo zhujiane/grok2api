@@ -1431,3 +1431,57 @@ func (a *quotaCountingAdapter) SyncQuotaMode(_ context.Context, credential accou
 		WindowSeconds: 3600, ResetAt: &resetAt, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now,
 	}, nil
 }
+
+type availabilityConsoleAdapter struct{ consoleQuotaSnapshotAdapter }
+
+func (a *availabilityConsoleAdapter) SyncQuota(ctx context.Context, value accountdomain.Credential) (provider.QuotaSnapshot, error) {
+	snapshot, err := a.consoleQuotaSnapshotAdapter.SyncQuota(ctx, value)
+	for i := range snapshot.Windows {
+		snapshot.Windows[i].Remaining = 0
+		snapshot.Windows[i].Total = 0
+		snapshot.Windows[i].Source = accountdomain.QuotaSourceAvailability
+	}
+	return snapshot, err
+}
+
+func TestConsoleAvailabilityRepairsLegacyReauthWithoutReopeningExpiredCredentials(t *testing.T) {
+	ctx := context.Background()
+	service, repo := newAutoCleanTestService(t, time.Now().UTC())
+	adapter := &availabilityConsoleAdapter{}
+	service.providers = provider.NewRegistry(adapter)
+	now := time.Now().UTC()
+	makeAccount := func(name, reason string) accountdomain.Credential {
+		value := mustUpsert(t, repo, accountdomain.Credential{Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO, Name: name, SourceKey: name, EncryptedAccessToken: "x", Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired, LastError: reason})
+		var windows []accountdomain.QuotaWindow
+		for _, mode := range []string{"console", "console_image", "console_video"} {
+			windows = append(windows, accountdomain.QuotaWindow{AccountID: value.ID, Mode: mode, Source: accountdomain.QuotaSourceUpstream, SyncedAt: &now, UpdatedAt: now})
+		}
+		if err := repo.ReplaceQuotaWindows(ctx, value.ID, "", now, windows); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	legacy := makeAccount("legacy-rejected", accountdomain.LastErrorConsoleUnlinked)
+	expired := makeAccount("actually-expired", "grok_console SSO credential rejected")
+	succeeded, failed, err := service.SyncIncompleteConsoleQuotas(ctx)
+	if err != nil || succeeded != 1 || failed != 0 {
+		t.Fatalf("migration=%d/%d %v", succeeded, failed, err)
+	}
+	repaired, err := repo.Get(ctx, legacy.ID)
+	if err != nil || repaired.AuthStatus != accountdomain.AuthStatusActive || repaired.LastError != "" || repaired.ReauthMarkedAt != nil {
+		t.Fatalf("legacy remains rejected: auth=%s error=%s err=%v", repaired.AuthStatus, repaired.LastError, err)
+	}
+	invalid, err := repo.Get(ctx, expired.ID)
+	if err != nil || invalid.AuthStatus != accountdomain.AuthStatusReauthRequired {
+		t.Fatal("actual expired credential was reopened")
+	}
+	if _, err := service.RefreshQuotaMode(ctx, legacy.ID, "console"); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.fullCalls.Load() != 1 {
+		t.Fatal("recent availability was probed repeatedly")
+	}
+	if state, err := service.ReconcileRateLimit(ctx, legacy.ID, "console", time.Minute); err != nil || state != RateLimitReconcileInconclusive {
+		t.Fatalf("unknown usage classified as exhausted or available: %s %v", state, err)
+	}
+}

@@ -137,7 +137,7 @@ type quotaWindowModel struct {
 	WindowSeconds int     `gorm:"not null;check:chk_account_quota_windows_window,window_seconds >= 0"`
 	ResetAt       *time.Time
 	SyncedAt      *time.Time
-	Source        string        `gorm:"size:16;not null;check:chk_account_quota_windows_source,source IN ('default','estimated','upstream')"`
+	Source        string        `gorm:"size:16;not null;check:chk_account_quota_windows_source,source IN ('default','estimated','upstream','availability')"`
 	UpdatedAt     time.Time     `gorm:"not null"`
 	Account       *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }

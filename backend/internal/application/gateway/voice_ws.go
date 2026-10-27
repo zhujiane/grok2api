@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -180,7 +181,9 @@ func (s *Service) OpenVoiceWebSocket(ctx context.Context, input VoiceWebSocketIn
 				case status == http.StatusPaymentRequired || status == http.StatusTooManyRequests:
 					if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
 						state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, failure.RetryAfter)
-						s.applyRateLimitReconciliation(ctx, credential, status, failure.RetryAfter, state, reconcileErr)
+						s.applyRateLimitReconciliation(ctx, credential, status, failure.RetryAfter, state, reconcileErr, route.UpstreamModel)
+					} else if credential.Provider == accountdomain.ProviderConsole {
+						s.applyRateLimitReconciliation(ctx, credential, status, failure.RetryAfter, accountapp.RateLimitReconcileInconclusive, nil, route.UpstreamModel)
 					} else {
 						s.selector.MarkFailure(ctx, credential, status, failure.RetryAfter)
 					}

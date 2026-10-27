@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -428,7 +429,7 @@ func (s *Service) executeVoice(
 			lease.Release()
 			continue
 		}
-		if s.retireConsoleNoCreditsAccount(ctx, requestID, credential, response) {
+		if s.blockConsoleNoCreditsModel(ctx, requestID, credential, route.UpstreamModel, response) {
 			_, _ = readRetryableBody(response.Body)
 			failedCredential := credential
 			lastCredentialFailure = &failedCredential
@@ -450,7 +451,9 @@ func (s *Service) executeVoice(
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
 				state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr)
+				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr, route.UpstreamModel)
+			} else if credential.Provider == accountdomain.ProviderConsole {
+				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, accountapp.RateLimitReconcileInconclusive, nil, route.UpstreamModel)
 			} else {
 				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 			}

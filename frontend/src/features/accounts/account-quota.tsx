@@ -124,6 +124,9 @@ export function ConsoleQuota({ windows, locale }: { windows: NonNullable<Account
     .map((mode) => windows.find((item) => item.mode === mode))
     .find((item) => item !== undefined);
   if (!window) return <span className="text-xs text-muted-foreground">{t("accounts.quotaNotSynced")}</span>;
+  if (window.source === "availability") {
+    return <Tooltip><TooltipTrigger asChild><span className="text-xs text-emerald-700 dark:text-emerald-300">{t("accounts.consoleAvailabilityOnly")}</span></TooltipTrigger><TooltipContent className="max-w-80 space-y-1"><div>{t("accounts.consoleAvailabilityDescription")}</div>{window.syncedAt ? <div className="text-muted-foreground">{t("accounts.consoleAvailabilityCheckedAt", { time: formatDateTime(window.syncedAt, locale) })}</div> : null}</TooltipContent></Tooltip>;
+  }
   const usedCents = Math.max(0, window.total - window.remaining);
   const percent = Math.max(0, Math.min(100, window.usagePercent));
   const exhausted = window.remaining <= 0;

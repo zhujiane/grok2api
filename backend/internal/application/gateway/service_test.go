@@ -949,10 +949,8 @@ func TestGatewaySSOBlockedForbiddenMarksInvalidAndSwitchesAccount(t *testing.T) 
 	}
 }
 
-// Console accounts created before the Grok/Cursor unification answer every
-// call with 403 "no credits or licenses yet". That is permanent, so the
-// account must be retired instead of being retried as an egress 403.
-func TestGatewayConsoleNoCreditsForbiddenMarksInvalidAndSwitchesAccount(t *testing.T) {
+// A Console credit denial blocks this model while preserving voice access.
+func TestGatewayConsoleNoCreditsBlocksModelAndKeepsCredential(t *testing.T) {
 	testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t, account.ProviderConsole, http.StatusForbidden, `{"code":"The caller does not have permission to execute the specified operation","error":"permission-denied: no credits or licenses yet"}`)
 }
 
@@ -1033,8 +1031,12 @@ func testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t *testing.T, providerV
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rejected.AuthStatus != account.AuthStatusReauthRequired || !rejected.Enabled {
-		t.Fatalf("rejected account = %#v", rejected)
+	wantAuth := account.AuthStatusReauthRequired
+	if providerValue == account.ProviderConsole && provider.IsConsoleNoCreditsText(failureBody) {
+		wantAuth = account.AuthStatusActive
+	}
+	if rejected.AuthStatus != wantAuth || !rejected.Enabled {
+		t.Fatalf("rejected auth = %s, want %s", rejected.AuthStatus, wantAuth)
 	}
 	healthy, err := accountRepo.Get(ctx, credentials[1].ID)
 	if err != nil || healthy.AuthStatus != account.AuthStatusActive {

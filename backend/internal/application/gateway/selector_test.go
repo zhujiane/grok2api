@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -2070,4 +2071,59 @@ func (f failingConcurrencyLimiter) Acquire(context.Context, string, int) (func()
 
 func (f failingConcurrencyLimiter) Current(context.Context, string) (int, error) {
 	return 0, nil
+}
+
+func TestConsoleUnknownBalanceRemainsEligible(t *testing.T) {
+	candidate := account.RoutingCandidate{Credential: account.Credential{ID: 1, Provider: account.ProviderConsole}, QuotaWindow: &account.QuotaWindow{Mode: "console", Source: account.QuotaSourceAvailability}}
+	if quotaWindowExhausted(candidate, nil) {
+		t.Fatal("availability-only account was blocked by unknown balance")
+	}
+	candidate.QuotaWindow.Source = account.QuotaSourceUpstream
+	if !quotaWindowExhausted(candidate, nil) {
+		t.Fatal("confirmed exhausted balance was ignored")
+	}
+	candidate.Credential.Provider = account.ProviderWeb
+	candidate.QuotaWindow.Source = account.QuotaSourceAvailability
+	if !quotaWindowExhausted(candidate, nil) {
+		t.Fatal("Console exception leaked to Web")
+	}
+}
+
+func TestConsoleModelRateLimitKeepsVoiceEligible(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusPaymentRequired} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			ctx := context.Background()
+			database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-only-limit.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			if err := database.InitializeSchema(ctx); err != nil {
+				t.Fatal(err)
+			}
+			repo := relational.NewAccountRepository(database)
+			credential, _, err := repo.UpsertByIdentity(ctx, account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "tts-valid", SourceKey: "tts-valid", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, 30*time.Second, 30*time.Minute, 500*time.Millisecond)
+			service := &Service{selector: selector}
+			service.applyRateLimitReconciliation(ctx, credential, status, 12*time.Second, accountapp.RateLimitReconcileInconclusive, nil, "grok-4.5")
+			stored, err := repo.Get(ctx, credential.ID)
+			if err != nil || stored.AuthStatus != account.AuthStatusActive || stored.CooldownUntil != nil || stored.FailureCount != 0 {
+				t.Fatalf("model limit affected the credential: auth=%s cooldown=%v err=%v", stored.AuthStatus, stored.CooldownUntil, err)
+			}
+			if _, err := repo.GetQuotaRecovery(ctx, credential.ID); !errors.Is(err, repository.ErrNotFound) {
+				t.Fatalf("model limit froze the account: %v", err)
+			}
+			chat, err := repo.ListRoutingCandidates(ctx, account.ProviderConsole, 0, "grok-4.5", "")
+			if err != nil || len(chat) != 1 || chat[0].ModelQuotaBlock == nil {
+				t.Fatalf("rejected model not blocked: %+v %v", chat, err)
+			}
+			voice, err := repo.ListRoutingCandidates(ctx, account.ProviderConsole, 0, "grok-voice-latest", "")
+			if err != nil || len(voice) != 1 || voice[0].ModelQuotaBlock != nil {
+				t.Fatalf("voice affected by chat limit: %+v %v", voice, err)
+			}
+		})
+	}
 }

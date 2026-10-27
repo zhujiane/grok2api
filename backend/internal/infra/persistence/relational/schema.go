@@ -175,6 +175,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.migrateProviderStreamIdleTimeouts(ctx); err != nil {
 		return fmt.Errorf("迁移 Provider 流式空闲超时: %w", err)
 	}
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{{model: &quotaWindowModel{}, table: "account_quota_windows", name: "chk_account_quota_windows_source"}}, "availability"); err != nil {
+		return fmt.Errorf("迁移 Console 可用性来源约束: %w", err)
+	}
 	if err := d.ensureConsoleConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
 	}

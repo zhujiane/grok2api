@@ -263,7 +263,7 @@ func (s *Service) executeImage(
 			lease.Release()
 			continue
 		}
-		if s.retireConsoleNoCreditsAccount(ctx, requestID, credential, response) {
+		if s.blockConsoleNoCreditsModel(ctx, requestID, credential, route.UpstreamModel, response) {
 			_, _ = readRetryableBody(response.Body)
 			failedCredential := credential
 			lastCredentialFailure = &failedCredential
@@ -283,11 +283,8 @@ func (s *Service) executeImage(
 		}
 		if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && response.StatusCode == http.StatusTooManyRequests && lease.QuotaMode != "" {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
-			exhausted, reconcileErr := s.accounts.ReconcileWebRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-			s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
-			if reconcileErr != nil || !exhausted {
-				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
-			}
+			state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
+			s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr, route.UpstreamModel)
 			if attemptPolicy.hasNext(attempt) {
 				_, _ = readRetryableBody(response.Body)
 				lease.Release()

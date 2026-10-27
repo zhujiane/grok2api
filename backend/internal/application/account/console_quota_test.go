@@ -80,3 +80,18 @@ func TestConsoleQuotaWindowsControlTheirMatchingRoutes(t *testing.T) {
 		t.Fatal("Web quota behavior must remain unchanged")
 	}
 }
+
+func TestAvailabilitySnapshotDoesNotScheduleQuotaExhaustion(t *testing.T) {
+	now := time.Now().UTC()
+	windows := []accountdomain.QuotaWindow{}
+	for _, mode := range []string{"console", "console_image", "console_video"} {
+		window := accountdomain.QuotaWindow{Mode: mode, Source: accountdomain.QuotaSourceAvailability, SyncedAt: &now}
+		if due := quotaRecoveryDueAt(window, now, true); due != nil {
+			t.Fatalf("unknown balance scheduled as exhausted: %v", due)
+		}
+		windows = append(windows, window)
+	}
+	if !completeConsoleUsageSnapshot(windows) {
+		t.Fatal("availability snapshot triggers repeated startup probes")
+	}
+}

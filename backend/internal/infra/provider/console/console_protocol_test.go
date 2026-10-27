@@ -412,18 +412,18 @@ func TestSyncQuotaClampsOverspentBudget(t *testing.T) {
 	}
 }
 
-func TestSyncQuotaUnlinkedAccountIsUnauthorized(t *testing.T) {
+func TestSyncQuotaUnlinkedDashboardDoesNotInvalidateCredential(t *testing.T) {
 	stub := &dashboardStub{t: t, unlinked: true, cursorMerged: `,"cursorMerged":false`}
 	adapter, _, closeServer := newDashboardTestAdapter(t, stub)
 	defer closeServer()
 	_, credential := newConsoleTestAdapter(t, "http://unused")
 	_, err := adapter.SyncQuota(context.Background(), credential)
-	if !errors.Is(err, provider.ErrUnauthorized) || !strings.Contains(err.Error(), "cursorMerged=false") {
+	if err == nil || errors.Is(err, provider.ErrUnauthorized) || !strings.Contains(err.Error(), "TTS") {
 		t.Fatalf("err = %v", err)
 	}
 	// Pre-unification accounts have no cursorMerged field at all.
 	stub.cursorMerged = ""
-	if _, err := adapter.SyncQuota(context.Background(), credential); !errors.Is(err, provider.ErrUnauthorized) {
+	if _, err := adapter.SyncQuota(context.Background(), credential); err == nil || errors.Is(err, provider.ErrUnauthorized) {
 		t.Fatalf("missing field err = %v", err)
 	}
 	// A merged account landing on the sign-in page is a transient fault.

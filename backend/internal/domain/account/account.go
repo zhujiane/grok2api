@@ -118,9 +118,9 @@ const (
 	LastErrorMissingThinkingDisabled = "missing_thinking_disabled"
 )
 
-// LastErrorConsoleUnlinked is the reauth reason recorded for grok_console
-// accounts created before the Grok/Cursor unification: they are not linked to
-// Cursor and have no Console credits (403 "no credits or licenses yet").
+// LastErrorConsoleUnlinked is the legacy dashboard-only reauth marker.
+// A successful inference probe can repair this state; it does not prove that
+// the SSO credential has expired. Keep the value stable for existing records.
 const LastErrorConsoleUnlinked = "grok_console account has no credits or licenses (not linked to Cursor)"
 
 // NormalizeHealthMarker admits only durable non-sensitive health markers.
@@ -306,6 +306,8 @@ const (
 	QuotaSourceDefault   QuotaSource = "default"
 	QuotaSourceEstimated QuotaSource = "estimated"
 	QuotaSourceUpstream  QuotaSource = "upstream"
+	// Availability records a successful TTS probe, without claiming a known balance.
+	QuotaSourceAvailability QuotaSource = "availability"
 )
 
 const (

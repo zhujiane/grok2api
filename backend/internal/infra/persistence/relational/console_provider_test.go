@@ -73,6 +73,21 @@ func TestConsoleQuotaParticipatesInRoutingAndSummary(t *testing.T) {
 	if len(summary) != 1 || summary[0].Available != 0 || summary[0].WaitingReset != 1 {
 		t.Fatalf("summary after exhaustion = %#v", summary)
 	}
+	for _, mode := range []string{"console", "console_image", "console_video"} {
+		if err := repository.SaveQuotaWindows(ctx, credential.ID, "", now, []account.QuotaWindow{{AccountID: credential.ID, Mode: mode, Source: account.QuotaSourceAvailability, SyncedAt: &now, UpdatedAt: now}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summary, err = repository.Summarize(ctx, now)
+	if err != nil || len(summary) != 1 || summary[0].Available != 1 || summary[0].WaitingReset != 0 {
+		t.Fatalf("unknown balance was counted exhausted: %#v, %v", summary, err)
+	}
+	if complete, err := repository.HasQuotaWindows(ctx, credential.ID); err != nil || !complete {
+		t.Fatalf("availability snapshot initialization: %v %v", complete, err)
+	}
+	if updated, err := repository.DecrementQuotaWindow(ctx, credential.ID, "console", now); err != nil || updated {
+		t.Fatalf("decremented unknown balance: %v %v", updated, err)
+	}
 }
 
 func TestHasQuotaWindowsRejectsLegacyConsoleSnapshot(t *testing.T) {
