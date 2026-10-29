@@ -345,15 +345,13 @@ func fetchStatsigMetaContentWithDo(ctx context.Context, baseURL, token string, l
 	if isVideoCall(ctx) {
 		imagine, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/imagine", do)
 		if err == nil && imagine.statusCode >= 200 && imagine.statusCode < 300 {
-			if content, extractErr := extractStatsigMetaContent(imagine.body); extractErr == nil {
-				return content, nil
-			}
+			// A successful current page without a seed means signing is no longer
+			// required. Do not replace that result with a legacy /index failure.
+			return extractStatsigMetaContent(imagine.body)
 		}
 		root, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/", do)
 		if err == nil && root.statusCode >= 200 && root.statusCode < 300 {
-			if content, extractErr := extractStatsigMetaContent(root.body); extractErr == nil {
-				return content, nil
-			}
+			return extractStatsigMetaContent(root.body)
 		}
 	}
 	index, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/index", do)
@@ -361,8 +359,8 @@ func fetchStatsigMetaContentWithDo(ctx context.Context, baseURL, token string, l
 		return "", err
 	}
 	if index.statusCode >= 200 && index.statusCode < 300 {
-		// A successful index response without the verification meta remains a hard
-		// protocol failure. Falling back here would hide a changed upstream page.
+		// Preserve the missing-seed result so callers can detect pages that no
+		// longer require signing.
 		return extractStatsigMetaContent(index.body)
 	}
 	if index.statusCode != http.StatusNotFound {

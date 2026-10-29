@@ -24,6 +24,48 @@ type failingStatsigBody struct{}
 func (failingStatsigBody) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 func (failingStatsigBody) Close() error             { return nil }
 
+func TestVideoStatsigMetaUsesSuccessfulCurrentPage(t *testing.T) {
+	for _, page := range []string{"/imagine", "/"} {
+		for _, seed := range []string{"", "legacy-meta"} {
+			t.Run(fmt.Sprintf("page_%s_seed_%s", page, seed), func(t *testing.T) {
+				var paths []string
+				do := func(request *http.Request) (*http.Response, error) {
+					paths = append(paths, request.URL.Path)
+					status, body := http.StatusForbidden, "forbidden"
+					if request.URL.Path == page {
+						status, body = http.StatusOK, `<html><head></head></html>`
+						if seed != "" {
+							body = `<meta name="grok-site-verification" content="` + seed + `">`
+						}
+					}
+					return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+				}
+				value, err := fetchStatsigMetaContentWithDo(withVideoCall(context.Background()), "https://grok.com", "token", nil, do)
+				if seed == "" {
+					if !errors.Is(err, errStatsigMetaMissing) {
+						t.Fatalf("missing seed must survive legacy index 403: value=%q err=%v paths=%v", value, err, paths)
+					}
+				} else if err != nil || value != seed {
+					t.Fatalf("value=%q err=%v paths=%v", value, err, paths)
+				}
+				if strings.Join(paths, ",") != map[string]string{"/imagine": "/imagine", "/": "/imagine,/"}[page] {
+					t.Fatalf("unexpected fallback: paths=%v", paths)
+				}
+			})
+		}
+	}
+}
+
+func TestVideoStatsigMetaRejectsBlockedPages(t *testing.T) {
+	do := func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("forbidden")), Header: http.Header{}}, nil
+	}
+	_, err := fetchStatsigMetaContentWithDo(withVideoCall(context.Background()), "https://grok.com", "token", nil, do)
+	if err == nil || errors.Is(err, errStatsigMetaMissing) {
+		t.Fatalf("blocked pages must remain errors: %v", err)
+	}
+}
+
 func TestFetchStatsigMetaContentFallsBackToRootWhenIndexHasNoVerification(t *testing.T) {
 	var paths []string
 	do := func(request *http.Request) (*http.Response, error) {
